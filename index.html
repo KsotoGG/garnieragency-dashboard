@@ -50,6 +50,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
 select.btn{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%237e92b4' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center;padding-right:24px;background-color:var(--bg3)}
 option{background:var(--bg3)}
 
+/* CURRENCY TOGGLE */
+.cur-toggle{display:inline-flex;border:1px solid var(--border2);border-radius:var(--r2);overflow:hidden;background:var(--bg3);height:30px}
+.cur-opt{padding:0 12px;border:none;background:transparent;color:var(--text3);font-family:var(--font);font-size:11px;font-weight:500;cursor:pointer;transition:all .2s;letter-spacing:.02em}
+.cur-opt:hover{color:var(--text)}
+.cur-opt.active{background:linear-gradient(135deg,var(--teal),var(--cyan));color:#050d1a;font-weight:600}
+.cur-opt:disabled{opacity:.35;cursor:not-allowed}
+.cur-opt:disabled:hover{color:var(--text3)}
+
 /* STATUS */
 .sbar{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:var(--r2);background:var(--bg3);border:1px solid var(--border);margin-top:12px;font-size:11px;flex-wrap:wrap;gap:8px}
 .sbar-left{display:flex;align-items:center;gap:7px;color:var(--text2)}
@@ -233,6 +241,10 @@ option{background:var(--bg3)}
           </div>
         </div>
       </div>
+      <div class="cur-toggle" id="curToggle" title="Cambiar moneda de visualización">
+        <button class="cur-opt" id="curBtnLocal" onclick="setCurrencyMode('LOCAL')">Local</button>
+        <button class="cur-opt active" id="curBtnUSD" onclick="setCurrencyMode('USD')">USD</button>
+      </div>
       <button class="btn" onclick="window.print()">↓ Exportar</button>
       <button class="btn" onclick="resetFilters()">↺ Resetear</button>
       <button class="btn btn-accent" onclick="reloadData()">⟳ Actualizar</button>
@@ -373,7 +385,7 @@ option{background:var(--bg3)}
     </div>
   </div>
 
-  <div class="sec">Planilla Mensual (₡)</div>
+  <div class="sec" id="secPlanilla">Planilla Mensual</div>
   <div class="cg">
     <div class="panel c8">
       <div class="ph"><div><div class="pt">Evolución de Planilla</div><div class="ps">Suma de salarios pagados por mes</div></div></div>
@@ -520,6 +532,25 @@ option{background:var(--bg3)}
 
 const YEARS = [2022,2023,2024,2025,2026];
 
+// ─── TIPOS DE CAMBIO (FX) ──────────────────────────────────
+// Una URL por moneda local. Cada pestaña: Año | Mes | Tasa (unidades por 1 USD)
+const FX_URL = {
+  CRC: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR4Yee3gJzvhP6BSkFOPIOZjHhFMl_B1oIyOfuhhXnWokQw0hPc9lQLlYJwlnQ9NfOEea68VdIlHxGv/pub?gid=236686660&single=true&output=csv',
+  COP: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR4Yee3gJzvhP6BSkFOPIOZjHhFMl_B1oIyOfuhhXnWokQw0hPc9lQLlYJwlnQ9NfOEea68VdIlHxGv/pub?gid=911106678&single=true&output=csv',
+};
+
+// FX[currency][year][month] = tasa (cuántas unidades de moneda local equivalen a 1 USD)
+let FX = { CRC:{}, COP:{} };
+
+// 'USD' | 'LOCAL'  (LOCAL solo aplica cuando hay un único país seleccionado)
+let CURRENCY_MODE = localStorage.getItem('garnier_currency_mode') || 'LOCAL';
+
+const CURRENCY_INFO = {
+  CRC: { sym:'₡',    code:'CRC', label:'Colones'           },
+  COP: { sym:'COL$', code:'COP', label:'Pesos Colombianos' },
+  USD: { sym:'$',    code:'USD', label:'Dólares'           },
+};
+
 const YEAR_URL = {
   2022: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTd6XXnHhTiEM2N3Jky54ZxdFPnmjalA6DjVm5QSIclSmd2qyw00-j1lROtTiJYs1c9RwmSMRZbkkWV/pub?gid=2146792317&single=true&output=csv',
   2023: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTd6XXnHhTiEM2N3Jky54ZxdFPnmjalA6DjVm5QSIclSmd2qyw00-j1lROtTiJYs1c9RwmSMRZbkkWV/pub?gid=1491926370&single=true&output=csv',
@@ -601,6 +632,165 @@ function parseSal(s){
   else if(commas>=1&&dots===0) s=s.replace(/,/g,'');
   const n=parseFloat(s);
   return isNaN(n)?0:n;
+}
+
+// Parser dedicado para tasas FX: la coma es SIEMPRE decimal (ej. "646,2" → 646.2)
+function parseFX(s){
+  if(!s) return 0;
+  s = String(s).replace(/[\s₡$]/g,'').trim();
+  if(!s) return 0;
+  // Si hay coma, esa es la decimal; eliminamos puntos como separadores de miles
+  if(s.includes(',')) s = s.replace(/\./g,'').replace(',', '.');
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+
+// ─── CONVERSIÓN DE MONEDA ──────────────────────────────────
+// Mapea un país a su moneda local
+function getCurrencyForCountry(pais){
+  const p = (pais||'').toLowerCase().trim();
+  if(p.includes('colombia')) return 'COP';
+  if(p.includes('ecuador'))  return 'USD';
+  return 'CRC'; // default: Costa Rica
+}
+
+// Devuelve la tasa de la moneda para year/month, con carry-forward (último valor disponible)
+function getRate(currency, year, month){
+  if(currency === 'USD') return 1;
+  const table = FX[currency];
+  if(!table) return 0;
+  // 1) match exacto
+  if(table[year] && table[year][month] != null) return table[year][month];
+  // 2) carry-forward dentro del mismo año
+  if(table[year]){
+    for(let m = month-1; m >= 0; m--){
+      if(table[year][m] != null) return table[year][m];
+    }
+  }
+  // 3) último valor disponible en años anteriores
+  const years = Object.keys(table).map(Number).filter(y => y <= year).sort((a,b)=>b-a);
+  for(const y of years){
+    const months = Object.keys(table[y]).map(Number).sort((a,b)=>b-a);
+    for(const m of months){ if(table[y][m] != null) return table[y][m]; }
+  }
+  // 4) fallback: cualquier valor disponible
+  for(const y of Object.keys(table)){
+    for(const m of Object.keys(table[y])){ if(table[y][m] != null) return table[y][m]; }
+  }
+  return 0;
+}
+
+function toUSD(amount, currency, year, month){
+  if(!amount || currency === 'USD') return amount || 0;
+  const rate = getRate(currency, year, month);
+  return rate > 0 ? amount / rate : 0;
+}
+
+function fromUSD(amountUsd, currency, year, month){
+  if(!amountUsd || currency === 'USD') return amountUsd || 0;
+  const rate = getRate(currency, year, month);
+  return amountUsd * rate;
+}
+
+function convertAmount(amount, fromCur, toCur, year, month){
+  if(!amount || fromCur === toCur) return amount || 0;
+  return fromUSD(toUSD(amount, fromCur, year, month), toCur, year, month);
+}
+
+// Países únicos en el subconjunto filtrado actual
+function getCountriesSelected(){
+  return [...new Set(FILTERED.map(p => (p.pais||'').trim()).filter(Boolean))];
+}
+
+// Devuelve la moneda activa según el toggle + filtros aplicados
+// LOCAL solo es válido cuando hay UN solo país filtrado; si no, forzamos USD
+function getActiveCurrency(){
+  if(CURRENCY_MODE === 'USD') return 'USD';
+  const countries = getCountriesSelected();
+  if(countries.length !== 1) return 'USD';
+  return getCurrencyForCountry(countries[0]);
+}
+
+// True si el toggle LOCAL está disponible (1 solo país seleccionado y no es USD nativo)
+function localToggleEnabled(){
+  const countries = getCountriesSelected();
+  if(countries.length !== 1) return false;
+  // Si el único país usa USD, no tiene sentido el toggle
+  return getCurrencyForCountry(countries[0]) !== 'USD';
+}
+
+// Formatea con el símbolo de la moneda dada
+function fmtMoney(n, currency){
+  const info = CURRENCY_INFO[currency] || CURRENCY_INFO.USD;
+  return info.sym + fmtN(n);
+}
+function fmtA(n){ return fmtMoney(n, getActiveCurrency()); }
+function symA(){ return (CURRENCY_INFO[getActiveCurrency()]||CURRENCY_INFO.USD).sym; }
+
+// ─── HELPERS DE CONVERSIÓN APLICADOS A LOS DATOS ──────────
+// Salario de una persona en (year, month), convertido a la moneda activa
+function salPersonaActive(p, year, month){
+  if(!p || !p.sal[year]) return 0;
+  const raw = p.sal[year][month] || 0;
+  if(!raw) return 0;
+  return convertAmount(raw, getCurrencyForCountry(p.pais), getActiveCurrency(), year, month);
+}
+
+// Revenue de (year, month) convertido a la moneda activa (nativo USD)
+function revActive(year, month){
+  const raw = (REVENUE[year]||{})[month] || 0;
+  if(!raw) return 0;
+  return convertAmount(raw, 'USD', getActiveCurrency(), year, month);
+}
+
+// Liquidación: convierte un campo (salario/aguinaldo/total...) según el país de la persona
+function liqFieldActive(row, field){
+  const key = (row.nombre||'').toLowerCase().trim().replace(/\s+/g,' ');
+  const p = PERSONAS[key];
+  const country = p ? p.pais : '';
+  const fromCur = getCurrencyForCountry(country);
+  return convertAmount(row[field]||0, fromCur, getActiveCurrency(), row.anio, row.mes);
+}
+
+// Aumento mensual: convierte usando el país de la persona
+function aumPersonaMesActive(aumRow, monthIdx, year){
+  const key = (aumRow.nombre||'').toLowerCase().trim().replace(/\s+/g,' ');
+  const p = PERSONAS[key];
+  const country = p ? p.pais : '';
+  const fromCur = getCurrencyForCountry(country);
+  return convertAmount(aumRow.meses[monthIdx]||0, fromCur, getActiveCurrency(), year, monthIdx);
+}
+
+async function loadFX(){
+  FX = { CRC:{}, COP:{} };
+  const MES = {ene:0,feb:1,mar:2,abr:3,may:4,jun:5,jul:6,ago:7,sep:8,set:8,oct:9,nov:10,dic:11};
+  const tasks = Object.entries(FX_URL).map(async ([cur, url]) => {
+    try{
+      const r = await fetch(url);
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const csv = await r.text();
+      const rows = parseCSV(csv);
+      if(!rows.length) return;
+      // Asumimos header en fila 0: Año | Mes | Tasa
+      for(let i = 1; i < rows.length; i++){
+        const r0 = rows[i]; if(!r0 || !r0[0]) continue;
+        const y = parseInt(r0[0]);
+        if(isNaN(y)) continue;
+        const mesRaw = String(r0[1]||'').toLowerCase().trim().slice(0,3);
+        const m = MES[mesRaw];
+        if(m === undefined) continue;
+        const v = parseFX(r0[2]);
+        if(!v) continue;
+        if(!FX[cur][y]) FX[cur][y] = {};
+        FX[cur][y][m] = v;
+      }
+      const totalMonths = Object.values(FX[cur]).reduce((s,o)=>s+Object.keys(o).length, 0);
+      console.log(`[FX ${cur}] ${totalMonths} tasas cargadas`);
+    } catch(e){
+      console.warn(`[FX ${cur}] Error:`, e);
+    }
+  });
+  await Promise.all(tasks);
 }
 
 async function loadAumentos(){
@@ -1043,7 +1233,7 @@ async function loadData(){
   ldBar(82); ldMsg('Construyendo personas únicas...');
   buildPersonas();
   
-  await Promise.all([loadRevenue(), loadAumentos(), loadLiquidaciones()]);
+  await Promise.all([loadRevenue(), loadAumentos(), loadLiquidaciones(), loadFX()]);
 
   const total=Object.keys(PERSONAS).length;
   if(!total){
@@ -1237,8 +1427,47 @@ function applyFilters(){
   console.log(`[FILTER] Años:${SEL_YEARS} → ${FILTERED.length} personas`);
   const el=document.getElementById('chPeriodo');
   if(el) el.textContent=getPeriodoLabel();
+  updateCurrencyToggleUI();
   destroyCharts();
   renderAll();
+}
+
+// ─── TOGGLE DE MONEDA ──────────────────────────────────────
+function setCurrencyMode(mode){
+  if(mode === 'LOCAL' && !localToggleEnabled()){
+    // Si no hay un solo país filtrado, no aceptamos LOCAL
+    return;
+  }
+  CURRENCY_MODE = mode;
+  localStorage.setItem('garnier_currency_mode', mode);
+  updateCurrencyToggleUI();
+  destroyCharts();
+  renderAll();
+}
+
+function updateCurrencyToggleUI(){
+  const btnLocal = document.getElementById('curBtnLocal');
+  const btnUSD   = document.getElementById('curBtnUSD');
+  if(!btnLocal || !btnUSD) return;
+
+  const enabled = localToggleEnabled();
+  btnLocal.disabled = !enabled;
+
+  // Si el modo guardado es LOCAL pero no es válido, forzamos USD temporalmente
+  const effective = (CURRENCY_MODE === 'LOCAL' && enabled) ? 'LOCAL' : 'USD';
+  btnLocal.classList.toggle('active', effective === 'LOCAL');
+  btnUSD  .classList.toggle('active', effective === 'USD');
+
+  // Texto dinámico: muestra qué moneda local hay disponible
+  const countries = getCountriesSelected();
+  if(countries.length === 1){
+    const cur = getCurrencyForCountry(countries[0]);
+    btnLocal.textContent = `Local · ${CURRENCY_INFO[cur].code}`;
+    btnLocal.title = `Mostrar en ${CURRENCY_INFO[cur].label}`;
+  } else {
+    btnLocal.textContent = 'Local';
+    btnLocal.title = 'Filtra a un solo país para activar moneda local';
+  }
 }
 
 function resetFilters(){
@@ -1342,6 +1571,12 @@ function getPeriodoLabel(){
 }
 
 function renderAll(){
+  // Actualizar etiqueta de sección Planilla con la moneda activa
+  const secP = document.getElementById('secPlanilla');
+  if(secP){
+    const cur = getActiveCurrency();
+    secP.textContent = `Planilla Mensual (${CURRENCY_INFO[cur].code})`;
+  }
   renderKPIs();
   renderTend();
   renderDepto();
@@ -1398,11 +1633,11 @@ function renderKPIs(){
     return true;
   }).length;
 
-  // Planilla = acumulado de todos los años seleccionados
+  // Planilla = acumulado de todos los años seleccionados (en moneda activa)
   const mp = meses||Array.from({length:12},(_,i)=>i);
   planTotal = F.reduce((s,p)=>s+SEL_YEARS.reduce((ys,y)=>{
     if(!p.sal[y]) return ys;
-    return ys+mp.reduce((ms,mi)=>ms+(p.sal[y][mi]||0),0);
+    return ys+mp.reduce((ms,mi)=>ms+salPersonaActive(p,y,mi),0);
   },0),0);
   planMes = mp.length>0&&SEL_YEARS.length>0 ? planTotal/(mp.length*SEL_YEARS.length) : 0;
 
@@ -1422,15 +1657,15 @@ function renderKPIs(){
   const prevAct=prevC.n;
   const chgAct=prevAct?((activos-prevAct)/prevAct*100).toFixed(1):null;
 
-  // RPE
+  // RPE — revenue convertido a moneda activa
   const revTotal=SEL_YEARS.reduce((s,y)=>{
     const mp2=meses||Array.from({length:12},(_,i)=>i);
-    return s+mp2.reduce((ms,mi)=>ms+(REVENUE[y]?(REVENUE[y][mi]||0):0),0);
+    return s+mp2.reduce((ms,mi)=>ms+revActive(y,mi),0);
   },0);
   const rpeVal=activos>0?revTotal/activos:0;
   let rpeGrowth=null;
   if(SEL_YEARS.length===1&&REVENUE[prevY]){
-    const prevRev=Object.values(REVENUE[prevY]).reduce((a,b)=>a+b,0);
+    const prevRev=Object.keys(REVENUE[prevY]).reduce((a,k)=>a+revActive(prevY,+k),0);
     const prevRPE=prevRev/(prevAct||1);
     if(prevRPE>0) rpeGrowth=+((rpeVal-prevRPE)/prevRPE*100).toFixed(1);
   }
@@ -1447,15 +1682,15 @@ function renderKPIs(){
     {l:'Salidas del Período',v:salidas,b:rotTasa>5?'⚠ Alta':'✓ OK',bt:rotTasa>5?'dn':'up',
      ctx:`Tasa: ${rotTasa}% · Meta <5%`,c:rotTasa>5?'t-red':'t-green',spark:false},
     {l:'Género F',v:pctF+'%',b:`${mujeres} mujeres`,bt:'nt',ctx:'Proporción femenina',c:'t-purple',spark:false},
-    {l:'Planilla del Período',v:'₡'+fmtN(planTotal),b:null,bt:'nt',ctx:`Prom/mes: ₡${fmtN(planMes)}`,c:'t-amber',spark:false},
+    {l:'Planilla del Período',v:fmtA(planTotal),b:null,bt:'nt',ctx:`Prom/mes: ${fmtA(planMes)}`,c:'t-amber',spark:false},
     {l:'Tasa de Rotación',v:rotTasa+'%',b:rotTasa>5?'Alta':rotTasa>3?'Media':'OK',
      bt:rotTasa>5?'dn':rotTasa>3?'nt':'up',
      ctx:`${salidas} sal. / prom. ${Math.round(hcPromedio)} · Meta <5%`,
      c:rotTasa>5?'t-red':rotTasa>3?'t-amber':'t-teal',spark:false},
-    {l:'Revenue per Employee',v:revTotal>0?'₡'+fmtN(rpeVal):'Sin datos',
+    {l:'Revenue per Employee',v:revTotal>0?fmtA(rpeVal):'Sin datos',
      b:rpeGrowth!==null?(rpeGrowth>=0?'↑':'↓')+Math.abs(rpeGrowth)+'%':null,
      bt:rpeGrowth!==null?(rpeGrowth>=0?'up':'dn'):'nt',
-     ctx:revTotal>0?`Rev: ₡${fmtN(revTotal)} / ${activos} activos`:'Conecta el sheet de revenue',
+     ctx:revTotal>0?`Rev: ${fmtA(revTotal)} / ${activos} activos`:'Conecta el sheet de revenue',
      c:'t-cyan',spark:false},
   ];
   document.getElementById('kpiGrid').innerHTML=kpis.map((k,i)=>`
@@ -1622,13 +1857,13 @@ function renderCostDepto(){
   const deptos=[...new Set(F.map(p=>p.depto).filter(Boolean))].sort();
   if(!deptos.length){ emptyChart('cCostDepto'); return; }
 
-  // Para cada depto, calcular planilla mensual
+  // Para cada depto, calcular planilla mensual (en moneda activa)
   const datasets=deptos.map((d,di)=>{
     const color=PAL[di%PAL.length];
     return {
       label:d,
       data:Array.from({length:12},(_,mi)=>
-        F.filter(p=>p.depto===d).reduce((s,p)=>s+(p.sal[lastY]?p.sal[lastY][mi]||0:0),0)
+        F.filter(p=>p.depto===d).reduce((s,p)=>s+salPersonaActive(p,lastY,mi),0)
       ),
       borderColor:color,
       backgroundColor:color+'55',
@@ -1640,13 +1875,13 @@ function renderCostDepto(){
   const totalDepto={};
   deptos.forEach(d=>{
     totalDepto[d]=mp.reduce((s,mi)=>
-      s+F.filter(p=>p.depto===d).reduce((ps,p)=>ps+(p.sal[lastY]?p.sal[lastY][mi]||0:0),0)
+      s+F.filter(p=>p.depto===d).reduce((ps,p)=>ps+salPersonaActive(p,lastY,mi),0)
     ,0);
   });
   const topDepto=Object.entries(totalDepto).sort((a,b)=>b[1]-a[1])[0];
 
   document.getElementById('badgeCostDepto').textContent=
-    topDepto ? `Mayor: ${topDepto[0]} ₡${fmtN(topDepto[1])}` : String(lastY);
+    topDepto ? `Mayor: ${topDepto[0]} ${fmtA(topDepto[1])}` : String(lastY);
 
   if(CHARTS.costDepto){CHARTS.costDepto.destroy();delete CHARTS.costDepto;}
   const ctx=document.getElementById('cCostDepto'); if(!ctx) return;
@@ -1656,12 +1891,13 @@ function renderCostDepto(){
     options:{...BOPTS(),
       plugins:{...BOPTS().plugins,
         legend:{display:true,position:'top',align:'end',
-          labels:{color:'#dde4f0',font:{size:9},boxWidth:9,padding:8,usePointStyle:false,generateLabels:chart=>chart.data.datasets.map((ds,i)=>({text:ds.label,fontColor:'#dde4f0',fillStyle:ds.borderColor||ds.backgroundColor,strokeStyle:'transparent',lineWidth:0,hidden:false,datasetIndex:i}))}}
+          labels:{color:'#dde4f0',font:{size:9},boxWidth:9,padding:8,usePointStyle:false,generateLabels:chart=>chart.data.datasets.map((ds,i)=>({text:ds.label,fontColor:'#dde4f0',fillStyle:ds.borderColor||ds.backgroundColor,strokeStyle:'transparent',lineWidth:0,hidden:false,datasetIndex:i}))}},
+        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${fmtA(ctx.raw)}`}}
       },
       scales:{
         x:{ticks:{color:'#4a5a78',font:{size:9}},grid:{color:'#161f30'},border:{color:'transparent'}},
         y:{beginAtZero:true,
-          ticks:{color:'#4a5a78',font:{size:9},callback:v=>'₡'+fmtN(v)},
+          ticks:{color:'#4a5a78',font:{size:9},callback:v=>fmtA(v)},
           grid:{color:'#161f30'},border:{color:'transparent'}}
       }
     }
@@ -1923,10 +2159,10 @@ function renderPlan(){
   const F=FILTERED;
   const meses=getMeses();
   const mp=meses||Array.from({length:12},(_,i)=>i);
-  // Una línea por año seleccionado
+  // Una línea por año seleccionado (en moneda activa)
   const ds=SEL_YEARS.map(y=>({
     label:String(y),
-    data:Array.from({length:12},(_,mi)=>F.reduce((s,p)=>s+(p.sal[y]?p.sal[y][mi]||0:0),0)),
+    data:Array.from({length:12},(_,mi)=>F.reduce((s,p)=>s+salPersonaActive(p,y,mi),0)),
     borderColor:YCOL[y],bg:YCOL[y]+'18',fill:SEL_YEARS.length===1,bw:1.5,pr:2
   }));
   const lastY=Math.max(...SEL_YEARS);
@@ -1942,15 +2178,16 @@ function renderPlan(){
     options:{...BOPTS(),
       plugins:{...BOPTS().plugins,
         legend:{display:SEL_YEARS.length>1,position:'top',align:'end',
-          labels:{color:'#dde4f0',font:{size:9},boxWidth:9,padding:8,usePointStyle:false,generateLabels:chart=>chart.data.datasets.map((ds,i)=>({text:ds.label,fontColor:'#dde4f0',fillStyle:ds.borderColor||ds.backgroundColor,strokeStyle:'transparent',lineWidth:0,hidden:false,datasetIndex:i}))}}
+          labels:{color:'#dde4f0',font:{size:9},boxWidth:9,padding:8,usePointStyle:false,generateLabels:chart=>chart.data.datasets.map((ds,i)=>({text:ds.label,fontColor:'#dde4f0',fillStyle:ds.borderColor||ds.backgroundColor,strokeStyle:'transparent',lineWidth:0,hidden:false,datasetIndex:i}))}},
+        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${fmtA(ctx.raw)}`}}
       },
       scales:{
         x:{ticks:{color:'#4a5a78',font:{size:9}},grid:{color:'#161f30'},border:{color:'transparent'}},
-        y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9}},grid:{color:'#161f30'},border:{color:'transparent'}}
+        y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>fmtA(v)},grid:{color:'#161f30'},border:{color:'transparent'}}
       }
     }
   });
-  const data=Array.from({length:12},(_,mi)=>F.reduce((s,p)=>s+(p.sal[lastY]?p.sal[lastY][mi]||0:0),0));
+  const data=Array.from({length:12},(_,mi)=>F.reduce((s,p)=>s+salPersonaActive(p,lastY,mi),0));
   const df=mp.map(mi=>data[mi]);
   const tot=df.reduce((a,b)=>a+b,0);
   const nz=df.filter(v=>v>0);
@@ -1958,10 +2195,10 @@ function renderPlan(){
   const maxM=Math.max(...df,0);
   const perH=F.length?tot/F.length:0;
   document.getElementById('planStats').innerHTML=[
-    {l:'Total Período',v:'₡'+fmtN(tot),c:'var(--teal)'},
-    {l:'Prom. Mensual',v:'₡'+fmtN(avg),c:'var(--cyan)'},
-    {l:'Mes Máximo',v:'₡'+fmtN(maxM),c:'var(--green)'},
-    {l:'Por Persona',v:'₡'+fmtN(perH),c:'var(--amber)'},
+    {l:'Total Período',v:fmtA(tot),c:'var(--teal)'},
+    {l:'Prom. Mensual',v:fmtA(avg),c:'var(--cyan)'},
+    {l:'Mes Máximo',v:fmtA(maxM),c:'var(--green)'},
+    {l:'Por Persona',v:fmtA(perH),c:'var(--amber)'},
   ].map(s=>`<div class="pstat"><div class="pstat-l">${s.l}</div><div class="pstat-v" style="color:${s.c}">${s.v}</div></div>`).join('');
 }
 
@@ -2024,38 +2261,70 @@ function renderAumentos(){
     return;
   }
 
+  // Helpers locales para convertir montos de aumento a moneda activa
+  const aumRowTotal = r => r.meses.reduce((s,_,mi) => s + aumPersonaMesActive(r, mi, r.year), 0);
+
   const count    = rows.length;
-  const total    = rows.reduce((s,r) => s + r.meses.reduce((a,b)=>a+b,0), 0);
+  const total    = rows.reduce((s,r) => s + aumRowTotal(r), 0);
   const prom     = count > 0 ? total/count : 0;
-  const porMes   = Array.from({length:12}, (_,mi) => rows.reduce((s,r)=>s+(r.meses[mi]||0),0));
+  const porMes   = Array.from({length:12}, (_,mi) => rows.reduce((s,r)=>s+aumPersonaMesActive(r, mi, r.year), 0));
   const maxMesIdx= porMes.indexOf(Math.max(...porMes));
 
   // Comparativo por año si hay múltiples
-  const byYear = años.map(y=>({y,count:(AUMENTOS[y]||[]).length,total:(AUMENTOS[y]||[]).reduce((s,r)=>s+r.meses.reduce((a,b)=>a+b,0),0)}));
+  const byYear = años.map(y=>({
+    y,
+    count:(AUMENTOS[y]||[]).length,
+    total:(AUMENTOS[y]||[]).reduce((s,r)=>s+r.meses.reduce((a,_,mi)=>a+aumPersonaMesActive(r, mi, y), 0), 0)
+  }));
   const ctxCount = años.length>1?años.map(y=>`${y}:${byYear.find(b=>b.y===y)?.count||0}`).join(' · '):String(años[0]);
-  const ctxTotal = años.length>1?años.map(y=>`${y}:₡${fmtN(byYear.find(b=>b.y===y)?.total||0)}`).join(' · '):`Acumulado ${años[0]}`;
-  const ctxProm  = años.length>1?años.map(y=>{const b=byYear.find(x=>x.y===y);return `${y}:₡${fmtN(b?.count>0?b.total/b.count:0)}`;}).join(' · '):'Por colaborador';
+  const ctxTotal = años.length>1?años.map(y=>`${y}:${fmtA(byYear.find(b=>b.y===y)?.total||0)}`).join(' · '):`Acumulado ${años[0]}`;
+  const ctxProm  = años.length>1?años.map(y=>{const b=byYear.find(x=>x.y===y);return `${y}:${fmtA(b?.count>0?b.total/b.count:0)}`;}).join(' · '):'Por colaborador';
 
   document.getElementById('augCount').textContent   = count;
-  document.getElementById('augTotal').textContent   = '₡'+fmtN(total);
-  document.getElementById('augProm').textContent    = '₡'+fmtN(prom);
+  document.getElementById('augTotal').textContent   = fmtA(total);
+  document.getElementById('augProm').textContent    = fmtA(prom);
   document.getElementById('augMes').textContent     = MOL[maxMesIdx];
   document.getElementById('augCtx').textContent     = ctxCount;
   document.getElementById('augCtx2').textContent    = ctxTotal;
-  document.getElementById('augMesCtx').textContent  = `₡${fmtN(porMes[maxMesIdx])}`;
+  document.getElementById('augMesCtx').textContent  = fmtA(porMes[maxMesIdx]);
   document.getElementById('augBadge').textContent   = años.join(' & ');
 
   const dsAug = [2025,2026].filter(y=>AUMENTOS[y]&&AUMENTOS[y].length).map(y => ({
     label: String(y),
     data:  Array.from({length:12}, (_,mi) =>
-      (AUMENTOS[y]||[]).reduce((s,r)=>s+(r.meses[mi]||0),0)
+      (AUMENTOS[y]||[]).reduce((s,r)=>s+aumPersonaMesActive(r, mi, y), 0)
     ),
     borderColor: y===2026?'#4ade80':'#fbbf24',
     bg: y===2026?'#4ade8018':'#fbbf2418',
     fill:true, bw:2, pr:3
   }));
   if(CHARTS.augMes){CHARTS.augMes.destroy();delete CHARTS.augMes;}
-  CHARTS.augMes = mkLine('cAugMes', MOL, dsAug);
+  const ctxAugMes = document.getElementById('cAugMes');
+  if(ctxAugMes){
+    CHARTS.augMes = new Chart(ctxAugMes,{
+      type:'line',
+      data:{labels:MOL, datasets:dsAug.map(s=>({
+        label:s.label,data:s.data,
+        borderColor:s.borderColor,backgroundColor:s.bg||'transparent',
+        fill:s.fill!==undefined?s.fill:false,
+        tension:.4,borderWidth:s.bw||2,
+        pointRadius:s.pr!==undefined?s.pr:3,
+        pointBackgroundColor:s.borderColor
+      }))},
+      options:{...BOPTS(),
+        plugins:{...BOPTS().plugins,
+          legend:{display:dsAug.length>1,position:'top',align:'end',
+            labels:{color:'#dde4f0',font:{size:9},boxWidth:9,padding:8,
+              generateLabels:chart=>chart.data.datasets.map((ds,i)=>({text:ds.label,fontColor:'#dde4f0',fillStyle:ds.borderColor,strokeStyle:'transparent',lineWidth:0,hidden:false,datasetIndex:i}))}},
+          tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${fmtA(ctx.raw)}`}}
+        },
+        scales:{
+          x:{ticks:{color:'#4a5a78',font:{size:9}},grid:{color:'#161f30'},border:{color:'transparent'}},
+          y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>fmtA(v)},grid:{color:'#161f30'},border:{color:'transparent'}}
+        }
+      }
+    });
+  }
 
   const motivoC = {};
   rows.forEach(r => {
@@ -2068,12 +2337,13 @@ function renderAumentos(){
   CHARTS.augMotivo = mkDonut('cAugMotivo', motivoKeys, motivoVals);
 
   // Por departamento: % acumulado sobre planilla de todos los años con aumentos
+  // Todos los montos se convierten a la moneda activa antes de sumar/dividir
   const deptoAumento = {};
   const deptoPlanilla = {};
 
   rows.forEach(r => {
     const d = r.depto || 'N/D';
-    deptoAumento[d] = (deptoAumento[d]||0) + r.meses.reduce((a,b)=>a+b,0);
+    deptoAumento[d] = (deptoAumento[d]||0) + aumRowTotal(r);
   });
 
   // Acumular planilla de todos los años seleccionados que tengan datos de aumentos
@@ -2081,7 +2351,7 @@ function renderAumentos(){
     Object.values(PERSONAS).forEach(p => {
       if(!p.sal[y]) return;
       const d = p.depto || 'N/D';
-      const planillaAnual = p.sal[y].reduce((a,b)=>a+b,0);
+      const planillaAnual = (p.sal[y]||[]).reduce((a,_,mi)=>a+salPersonaActive(p,y,mi), 0);
       deptoPlanilla[d] = (deptoPlanilla[d]||0) + planillaAnual;
     });
   });
@@ -2126,22 +2396,27 @@ function renderLiquidaciones(){
   const data = liq;
   const label = anosDisp.join(' · ') || '—';
 
-  const totalMonto = data.reduce((s,r)=>s+r.total,0);
+  // Total y máximo convertidos a moneda activa (cada fila según país de la persona)
+  const totalMonto = data.reduce((s,r)=>s+liqFieldActive(r,'total'),0);
   const prom = data.length ? totalMonto/data.length : 0;
-  const maxRow = data.reduce((a,b)=>b.total>a.total?b:a, {total:0,nombre:''});
+  let maxRow = {total:0,nombre:''};
+  data.forEach(r=>{
+    const t = liqFieldActive(r,'total');
+    if(t > maxRow.total) maxRow = {total:t, nombre:r.nombre};
+  });
 
-  document.getElementById('liqTotal').textContent    = '₡'+fmtN(totalMonto);
+  document.getElementById('liqTotal').textContent    = fmtA(totalMonto);
   document.getElementById('liqTotalCtx').textContent = `${data.length} liquidaciones`;
-  document.getElementById('liqProm').textContent     = '₡'+fmtN(prom);
+  document.getElementById('liqProm').textContent     = fmtA(prom);
   document.getElementById('liqPromCtx').textContent  = 'por persona';
-  document.getElementById('liqMax').textContent      = '₡'+fmtN(maxRow.total);
+  document.getElementById('liqMax').textContent      = fmtA(maxRow.total);
   document.getElementById('liqMaxCtx').textContent   = maxRow.nombre || '—';
   document.getElementById('liqCount').textContent    = data.length;
   document.getElementById('badgeLiqMes').textContent  = label;
   document.getElementById('badgeLiqComp').textContent = label;
 
-  // Gráfico 1: Total acumulado por año
-  const totAnio = anosDisp.map(y => liq.filter(r=>r.anio===y).reduce((s,r)=>s+r.total,0));
+  // Gráfico 1: Total acumulado por año (moneda activa)
+  const totAnio = anosDisp.map(y => liq.filter(r=>r.anio===y).reduce((s,r)=>s+liqFieldActive(r,'total'),0));
   if(CHARTS.liqMes){CHARTS.liqMes.destroy();delete CHARTS.liqMes;}
   const ctxM=document.getElementById('cLiqMes'); if(!ctxM) return;
   CHARTS.liqMes=new Chart(ctxM,{
@@ -2154,18 +2429,18 @@ function renderLiquidaciones(){
     }]},
     options:{...BOPTS(),
       plugins:{...BOPTS().plugins,legend:{display:false},
-        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>' ₡'+fmtN(ctx.raw)}}
+        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>' '+fmtA(ctx.raw)}}
       },
       scales:{
         x:{ticks:{color:'#4a5a78',font:{size:11}},grid:{color:'#161f30'},border:{color:'transparent'}},
-        y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>'₡'+fmtN(v)},grid:{color:'#161f30'},border:{color:'transparent'}}
+        y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>fmtA(v)},grid:{color:'#161f30'},border:{color:'transparent'}}
       }
     }
   });
 
-  // Gráfico 2: Costo por tipo de salida
+  // Gráfico 2: Costo por tipo de salida (moneda activa)
   const porTipo={};
-  data.forEach(r=>{ const t=r.tipo||'N/D'; porTipo[t]=(porTipo[t]||0)+r.total; });
+  data.forEach(r=>{ const t=r.tipo||'N/D'; porTipo[t]=(porTipo[t]||0)+liqFieldActive(r,'total'); });
   const tipoSort=Object.entries(porTipo).sort((a,b)=>b[1]-a[1]);
   if(CHARTS.liqTipo){CHARTS.liqTipo.destroy();delete CHARTS.liqTipo;}
   const ctxT=document.getElementById('cLiqTipo'); if(!ctxT) return;
@@ -2181,18 +2456,18 @@ function renderLiquidaciones(){
         legend:{display:true,position:'bottom',
           labels:{color:'#dde4f0',font:{size:9},boxWidth:9,padding:8,
             generateLabels:chart=>chart.data.datasets[0].data.map((v,i)=>({
-              text:`${chart.data.labels[i]}: ₡${fmtN(v)}`,fontColor:'#dde4f0',
+              text:`${chart.data.labels[i]}: ${fmtA(v)}`,fontColor:'#dde4f0',
               fillStyle:chart.data.datasets[0].backgroundColor[i],
               strokeStyle:'transparent',lineWidth:0,hidden:false,index:i
             }))
           }
         },
-        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>` ₡${fmtN(ctx.raw)}`}}
+        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>' '+fmtA(ctx.raw)}}
       }
     }
   });
 
-  // Gráfico 3: Desglose por componente POR AÑO (barras apiladas)
+  // Gráfico 3: Desglose por componente POR AÑO (barras apiladas, moneda activa)
   const compCfg=[
     {label:'Aguinaldo', color:'#fbbf24',key:'aguinaldo'},
     {label:'Vacaciones',color:'#4ade80', key:'vacaciones'},
@@ -2201,7 +2476,7 @@ function renderLiquidaciones(){
   ];
   const compDs=compCfg.map(cfg=>({
     label:cfg.label,
-    data:anosDisp.map(y=>liq.filter(r=>r.anio===y).reduce((s,r)=>s+r[cfg.key],0)),
+    data:anosDisp.map(y=>liq.filter(r=>r.anio===y).reduce((s,r)=>s+liqFieldActive(r,cfg.key),0)),
     backgroundColor:cfg.color+'99',borderColor:cfg.color,
     borderWidth:1,borderRadius:3
   }));
@@ -2220,11 +2495,11 @@ function renderLiquidaciones(){
             }))
           }
         },
-        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>` ${ctx.dataset.label}: ₡${fmtN(ctx.raw)}`}}
+        tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${fmtA(ctx.raw)}`}}
       },
       scales:{
         x:{ticks:{color:'#4a5a78',font:{size:11}},grid:{color:'#161f30'},border:{color:'transparent'}},
-        y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>'₡'+fmtN(v)},grid:{color:'#161f30'},border:{color:'transparent'}}
+        y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>fmtA(v)},grid:{color:'#161f30'},border:{color:'transparent'}}
       }
     }
   });
