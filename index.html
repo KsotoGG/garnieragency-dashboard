@@ -559,7 +559,9 @@ const YEAR_URL = {
   2026: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTd6XXnHhTiEM2N3Jky54ZxdFPnmjalA6DjVm5QSIclSmd2qyw00-j1lROtTiJYs1c9RwmSMRZbkkWV/pub?gid=1449007607&single=true&output=csv',
 };
 
-const REVENUE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQ9sevoAAQSIQSOYswMM1C_6yxdubcQAx-atDd0N5uho65IA0FnvwFVeKbGhZX0blJOV7-LEt9AX9jl/pub?gid=717552885&single=true&output=csv';
+// Revenue data: actualmente solo Costa Rica. Cuando se agregue CO/EC se podrá ampliar este mapa.
+const REVENUE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT__77a8hASHBsF8sAj_NeyNu0pg6Oui_QK31SidoY8bjOT1-dp_M1HFaOp_CGJ5JWnky-JZh6DkW0x/pub?gid=717552885&single=true&output=csv';
+const REVENUE_COUNTRY = 'Costa Rica'; // país al que pertenecen los datos de revenue cargados
 
 const AUMENTOS_URL = {
   2025: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRb7qOTF0UTxkk00C5mpEC8LfGhuE8MBxr7A0mTnNf46sBdy0mKiMYDOEgM6JRXic1_y1ntO7DzpPj5/pub?gid=83497296&single=true&output=csv',
@@ -736,11 +738,39 @@ function salPersonaActive(p, year, month){
   return convertAmount(raw, getCurrencyForCountry(p.pais), getActiveCurrency(), year, month);
 }
 
-// Revenue de (year, month) convertido a la moneda activa (nativo USD)
+// True si el país al que pertenece el revenue está representado en el filtro actual
+function revenueInScope(){
+  // Solo aplicamos revenue si el filtro incluye al menos una persona del país de los datos (Costa Rica).
+  // Si el usuario filtra exclusivamente a Colombia/Ecuador, el revenue queda en blanco.
+  const target = (REVENUE_COUNTRY||'').toLowerCase().trim();
+  return FILTERED.some(p => (p.pais||'').toLowerCase().trim() === target);
+}
+
+// Revenue de (year, month) convertido a la moneda activa (nativo USD).
+// Devuelve 0 si el filtro actual no incluye al país de los datos de revenue.
 function revActive(year, month){
+  if(!revenueInScope()) return 0;
   const raw = (REVENUE[year]||{})[month] || 0;
   if(!raw) return 0;
   return convertAmount(raw, 'USD', getActiveCurrency(), year, month);
+}
+
+// Cuenta de activos limitada al país del revenue (para que el RPE sea coherente)
+// Usa la misma lógica de cierre que renderKPIs cuando hay múltiples años / un solo año
+function revCountryActivos(F, lastY, isMulti, meses){
+  const target = (REVENUE_COUNTRY||'').toLowerCase().trim();
+  const F_REV = F.filter(p => (p.pais||'').toLowerCase().trim() === target);
+  if(!F_REV.length) return 0;
+  if(isMulti){
+    const c = hcCierre(F_REV, lastY);
+    return c.n;
+  }
+  if(meses && meses.length){
+    const lm = Math.max(...meses);
+    return hc(F_REV, lastY, lm);
+  }
+  const c = hcCierre(F_REV, lastY);
+  return c.n;
 }
 
 // Liquidación: convierte un campo (salario/aguinaldo/total...) según el país de la persona
@@ -1657,16 +1687,22 @@ function renderKPIs(){
   const prevAct=prevC.n;
   const chgAct=prevAct?((activos-prevAct)/prevAct*100).toFixed(1):null;
 
-  // RPE — revenue convertido a moneda activa
-  const revTotal=SEL_YEARS.reduce((s,y)=>{
+  // RPE — revenue solo aplica si el país de los datos está en el scope filtrado.
+  // Los activos del RPE son SOLO los del país de revenue (Costa Rica hoy) para evitar distorsión.
+  const revOK     = revenueInScope();
+  const revTotal  = !revOK ? 0 : SEL_YEARS.reduce((s,y)=>{
     const mp2=meses||Array.from({length:12},(_,i)=>i);
     return s+mp2.reduce((ms,mi)=>ms+revActive(y,mi),0);
   },0);
-  const rpeVal=activos>0?revTotal/activos:0;
+  const revActiv  = revOK ? revCountryActivos(F, lastY, isMulti, meses) : 0;
+  const rpeVal    = revActiv>0 ? revTotal/revActiv : 0;
   let rpeGrowth=null;
-  if(SEL_YEARS.length===1&&REVENUE[prevY]){
-    const prevRev=Object.keys(REVENUE[prevY]).reduce((a,k)=>a+revActive(prevY,+k),0);
-    const prevRPE=prevRev/(prevAct||1);
+  if(revOK && SEL_YEARS.length===1 && REVENUE[prevY]){
+    const prevRev   = Object.keys(REVENUE[prevY]).reduce((a,k)=>a+revActive(prevY,+k),0);
+    // Para growth, usamos activos prev limitado al país de revenue
+    const prevF_REV = Object.values(PERSONAS).filter(p=>p.sal[prevY]&&p.sal[prevY].some(v=>v>0) && (p.pais||'').toLowerCase().trim()===REVENUE_COUNTRY.toLowerCase().trim());
+    const prevRevAct= hcCierre(prevF_REV, prevY).n;
+    const prevRPE   = prevRev/(prevRevAct||1);
     if(prevRPE>0) rpeGrowth=+((rpeVal-prevRPE)/prevRPE*100).toFixed(1);
   }
 
@@ -1687,10 +1723,14 @@ function renderKPIs(){
      bt:rotTasa>5?'dn':rotTasa>3?'nt':'up',
      ctx:`${salidas} sal. / prom. ${Math.round(hcPromedio)} · Meta <5%`,
      c:rotTasa>5?'t-red':rotTasa>3?'t-amber':'t-teal',spark:false},
-    {l:'Revenue per Employee',v:revTotal>0?fmtA(rpeVal):'Sin datos',
+    {l:'Revenue per Employee',v:(revOK && revTotal>0)?fmtA(rpeVal):'Sin datos',
      b:rpeGrowth!==null?(rpeGrowth>=0?'↑':'↓')+Math.abs(rpeGrowth)+'%':null,
      bt:rpeGrowth!==null?(rpeGrowth>=0?'up':'dn'):'nt',
-     ctx:revTotal>0?`Rev: ${fmtA(revTotal)} / ${activos} activos`:'Conecta el sheet de revenue',
+     ctx:!revOK
+       ? `Sin datos de revenue para esta selección`
+       : (revTotal>0
+           ? `Rev: ${fmtA(revTotal)} / ${revActiv} activos ${REVENUE_COUNTRY}`
+           : 'Conecta el sheet de revenue'),
      c:'t-cyan',spark:false},
   ];
   document.getElementById('kpiGrid').innerHTML=kpis.map((k,i)=>`
