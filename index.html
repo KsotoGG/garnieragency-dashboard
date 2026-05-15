@@ -355,7 +355,7 @@ option{background:var(--bg3)}
   <div class="sec">Rotación & Salidas</div>
   <div class="cg">
     <div class="panel c6">
-      <div class="ph"><div><div class="pt">Tasa de Rotación Mensual</div><div class="ps">% salidas / headcount activo · Meta &lt;5%</div></div></div>
+      <div class="ph"><div><div class="pt">Tasa de Rotación Mensual</div><div class="ps">% salidas / headcount activo · Meta &lt;12%</div></div></div>
       <div style="height:220px"><canvas id="cRot"></canvas></div>
     </div>
     <div class="panel c3">
@@ -388,12 +388,25 @@ option{background:var(--bg3)}
   <div class="sec" id="secPlanilla">Planilla Mensual</div>
   <div class="cg">
     <div class="panel c8">
-      <div class="ph"><div><div class="pt">Evolución de Planilla</div><div class="ps">Suma de salarios pagados por mes</div></div></div>
+      <div class="ph"><div><div class="pt">Evolución de Planilla</div><div class="ps">Costo total = bruto + cargas sociales + planilla especial</div></div></div>
       <div style="height:240px"><canvas id="cPlan"></canvas></div>
+      <div id="planEspNote" style="margin-top:8px;padding:6px 10px;border-top:1px dashed var(--border);font-size:10.5px;color:var(--text2);display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#a78bfa;vertical-align:middle;margin-right:6px"></span>Planilla especial incluida</span>
+        <span id="planEspNoteVal" style="color:var(--text);font-family:var(--mono);font-weight:500">—</span>
+      </div>
     </div>
     <div class="panel c4">
       <div class="ph"><div><div class="pt">Resumen de Planilla</div></div></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:4px" id="planStats"></div>
+    </div>
+
+    <div class="panel c8 fi">
+      <div class="ph"><div><div class="pt">Planilla Especial</div><div class="ps">Solo modalidad especial · pagada en USD</div></div><div class="badge" id="badgePlanEsp">—</div></div>
+      <div style="height:200px"><canvas id="cPlanEsp"></canvas></div>
+    </div>
+    <div class="panel c4 fi">
+      <div class="ph"><div><div class="pt">Resumen Especial</div></div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:4px" id="planEspStats"></div>
     </div>
   </div>
 
@@ -740,6 +753,20 @@ function fmtMoney(n, currency){
 function fmtA(n){ return fmtMoney(n, getActiveCurrency()); }
 function symA(){ return (CURRENCY_INFO[getActiveCurrency()]||CURRENCY_INFO.USD).sym; }
 
+// ─── CARGAS SOCIALES (costo patronal sobre el salario regular) ───
+// Multiplicador adicional al bruto. NO aplica a planilla especial (modalidad USD).
+const SOCIAL_CHARGE = {
+  'Costa Rica': 0.42,
+  'Colombia':   0.383,
+  'Ecuador':    0.33,
+};
+function getSocialChargeRate(pais){
+  const p = (pais||'').toLowerCase().trim();
+  if(!p) return 0;
+  const key = Object.keys(SOCIAL_CHARGE).find(k => k.toLowerCase().trim() === p);
+  return key ? SOCIAL_CHARGE[key] : 0;
+}
+
 // ─── HELPERS DE CONVERSIÓN APLICADOS A LOS DATOS ──────────
 // Salario REGULAR crudo (moneda local de la persona)
 function salPersonaRaw(p, year, month){
@@ -751,17 +778,30 @@ function salEspRaw(p, year, month){
   if(!p || !p.salEsp || !p.salEsp[year]) return 0;
   return p.salEsp[year][month] || 0;
 }
-// Salario TOTAL de una persona en (year, month), convertido a la moneda activa.
-// Suma la planilla regular (moneda local) + la planilla especial (USD), ambas convertidas.
+// Bruto REGULAR convertido a moneda activa (sin cargas sociales, sin especial)
+function salRegularGrossActive(p, year, month){
+  const r = salPersonaRaw(p, year, month);
+  if(!r) return 0;
+  return convertAmount(r, getCurrencyForCountry(p.pais), getActiveCurrency(), year, month);
+}
+// Cargas sociales sobre el salario regular, en moneda activa (NO sobre el especial)
+function salChargesActive(p, year, month){
+  return salRegularGrossActive(p, year, month) * getSocialChargeRate(p.pais);
+}
+// Planilla ESPECIAL convertida a moneda activa (USD nativo)
+function salEspecialActive(p, year, month){
+  const e = salEspRaw(p, year, month);
+  if(!e) return 0;
+  return convertAmount(e, 'USD', getActiveCurrency(), year, month);
+}
+// COSTO TOTAL de una persona en (year, month), convertido a la moneda activa.
+//   = bruto regular × (1 + carga social del país)  +  planilla especial (USD, sin cargas)
 function salPersonaActive(p, year, month){
   if(!p) return 0;
-  const active = getActiveCurrency();
-  let sum = 0;
-  const r = salPersonaRaw(p, year, month);
-  if(r) sum += convertAmount(r, getCurrencyForCountry(p.pais), active, year, month);
-  const e = salEspRaw(p, year, month);
-  if(e) sum += convertAmount(e, 'USD', active, year, month);
-  return sum;
+  const grossReg = salRegularGrossActive(p, year, month);
+  const charge   = grossReg * getSocialChargeRate(p.pais);
+  const esp      = salEspecialActive(p, year, month);
+  return grossReg + charge + esp;
 }
 // True si la persona tiene CUALQUIER salario (regular o especial) en ese (year, month)
 function personHasSal(p, year, month){
@@ -1739,6 +1779,7 @@ function renderAll(){
   renderRot(); renderRotVol(); renderRotInd(); renderMot(); renderRaz(); renderDest();
   renderHM();
   renderPlan();
+  renderPlanEsp();
   renderIA();
   renderFlujo();
   renderAumentos();
@@ -1860,14 +1901,14 @@ function renderKPIs(){
      b:chgAct?(+chgAct>=0?'↑':'↓')+Math.abs(chgAct)+'%':null,bt:chgAct?(+chgAct>=0?'up':'dn'):'nt',
      ctx:ctx+(prevAct?` · vs ${prevAct} año ant.`:''),c:'t-teal',spark:true},
     {l:'Ingresos del Período',v:ingresos,b:null,bt:'nt',ctx:isMulti?SEL_YEARS.join('+'):getPeriodoLabel(),c:'t-cyan',spark:false},
-    {l:'Salidas del Período',v:salidas,b:rotTasa>5?'⚠ Alta':'✓ OK',bt:rotTasa>5?'dn':'up',
-     ctx:`Tasa: ${rotTasa}% · Meta <5%`,c:rotTasa>5?'t-red':'t-green',spark:false},
+    {l:'Salidas del Período',v:salidas,b:rotTasa>25?'⚠ Alta':'✓ OK',bt:rotTasa>25?'dn':'up',
+     ctx:`Tasa: ${rotTasa}% · Meta <12%`,c:rotTasa>25?'t-red':'t-green',spark:false},
     {l:'Género F',v:pctF+'%',b:`${mujeres} mujeres`,bt:'nt',ctx:'Proporción femenina',c:'t-purple',spark:false},
-    {l:'Planilla del Período',v:fmtA(planTotal),b:null,bt:'nt',ctx:`Prom/mes: ${fmtA(planMes)}`,c:'t-amber',spark:false},
-    {l:'Tasa de Rotación',v:rotTasa+'%',b:rotTasa>5?'Alta':rotTasa>3?'Media':'OK',
-     bt:rotTasa>5?'dn':rotTasa>3?'nt':'up',
-     ctx:`${salidas} sal. / prom. ${Math.round(hcPromedio)} · Meta <5%`,
-     c:rotTasa>5?'t-red':rotTasa>3?'t-amber':'t-teal',spark:false},
+    {l:'Costo Total Planilla',v:fmtA(planTotal),b:null,bt:'nt',ctx:`Bruto + cargas + especial · Prom/mes: ${fmtA(planMes)}`,c:'t-amber',spark:false},
+    {l:'Tasa de Rotación',v:rotTasa+'%',b:rotTasa>25?'Alta':rotTasa>12?'Media':'OK',
+     bt:rotTasa>25?'dn':rotTasa>12?'nt':'up',
+     ctx:`${salidas} sal. / prom. ${Math.round(hcPromedio)} · Meta <12%`,
+     c:rotTasa>25?'t-red':rotTasa>12?'t-amber':'t-teal',spark:false},
     {l:'Revenue per Employee',v:(revOK && rpeMonthlyN>0)?fmtA(rpeVal):'Sin datos',
      b:rpeGrowth!==null?(rpeGrowth>=0?'↑':'↓')+Math.abs(rpeGrowth)+'%':null,
      bt:rpeGrowth!==null?(rpeGrowth>=0?'up':'dn'):'nt',
@@ -2372,18 +2413,111 @@ function renderPlan(){
       }
     }
   });
+  // Datos del último año seleccionado, costo total mes a mes
   const data=Array.from({length:12},(_,mi)=>F.reduce((s,p)=>s+salPersonaActive(p,lastY,mi),0));
   const df=mp.map(mi=>data[mi]);
   const tot=df.reduce((a,b)=>a+b,0);
-  const nz=df.filter(v=>v>0);
-  const avg=nz.length?tot/nz.length:0;
-  const maxM=Math.max(...df,0);
-  const perH=F.length?tot/F.length:0;
+
+  // Desglose del período completo (todos los años seleccionados, no solo lastY)
+  let totBrutoReg = 0, totCargas = 0, totEsp = 0;
+  F.forEach(p=>{
+    SEL_YEARS.forEach(y=>{
+      mp.forEach(mi=>{
+        totBrutoReg += salRegularGrossActive(p, y, mi);
+        totCargas   += salChargesActive(p, y, mi);
+        totEsp      += salEspecialActive(p, y, mi);
+      });
+    });
+  });
+  const totalAll = totBrutoReg + totCargas + totEsp;
+  const pctCargas = totBrutoReg>0 ? (totCargas/totBrutoReg*100).toFixed(1) : '0';
+
   document.getElementById('planStats').innerHTML=[
-    {l:'Total Período',v:fmtA(tot),c:'var(--teal)'},
+    {l:'Total (Costo)',     v:fmtA(totalAll),   c:'var(--teal)',   sub:''},
+    {l:'Bruto Regular',     v:fmtA(totBrutoReg),c:'var(--cyan)',   sub:''},
+    {l:'Cargas Sociales',   v:fmtA(totCargas),  c:'var(--purple)', sub:`+${pctCargas}%`},
+    {l:'Planilla Especial', v:fmtA(totEsp),     c:'#a78bfa',       sub:'(USD bruto)'},
+  ].map(s=>`<div class="pstat"><div class="pstat-l">${s.l}${s.sub?` <span style="color:var(--text3);font-weight:400">${s.sub}</span>`:''}</div><div class="pstat-v" style="color:${s.c}">${s.v}</div></div>`).join('');
+
+  // Nota debajo del chart: monto total de la planilla ESPECIAL en el período (informativo)
+  const noteEl = document.getElementById('planEspNoteVal');
+  if(noteEl){
+    const nPers = F.filter(p => p.hasSpecial).length;
+    noteEl.textContent = totEsp>0
+      ? `${fmtA(totEsp)} · ${nPers} ${nPers===1?'persona':'personas'} (sin cargas)`
+      : 'Sin movimientos en este período';
+  }
+}
+
+// ─── PLANILLA ESPECIAL ──────────────────────────────────────
+// Gráfico dedicado: monto mensual pagado en la modalidad especial (USD).
+// Respeta el filtro de país (FILTERED) y la moneda activa.
+function renderPlanEsp(){
+  const F = FILTERED.filter(p => p.hasSpecial);
+  const meses = getMeses();
+  const mp = meses||Array.from({length:12},(_,i)=>i);
+
+  // Helper: total especial de una persona en (y, mi) en moneda activa
+  const espActive = (p, y, mi) => {
+    const e = (p.salEsp && p.salEsp[y]) ? (p.salEsp[y][mi]||0) : 0;
+    if(!e) return 0;
+    return convertAmount(e, 'USD', getActiveCurrency(), y, mi);
+  };
+
+  // Una línea por año seleccionado
+  const ds = SEL_YEARS.map(y=>({
+    label: String(y),
+    data:  Array.from({length:12},(_,mi)=>F.reduce((s,p)=>s+espActive(p,y,mi), 0)),
+    borderColor: YCOL[y],
+    bg: YCOL[y]+'18',
+    fill: SEL_YEARS.length===1,
+    bw: 1.5, pr: 2
+  }));
+
+  if(CHARTS.planEsp){CHARTS.planEsp.destroy();delete CHARTS.planEsp;}
+  const ctxC = document.getElementById('cPlanEsp');
+  if(ctxC){
+    CHARTS.planEsp = new Chart(ctxC,{
+      type:'line',
+      data:{labels:MOL, datasets:ds.map(s=>({
+        label:s.label,data:s.data,
+        borderColor:s.borderColor,backgroundColor:s.bg,
+        fill:s.fill,tension:.4,borderWidth:s.bw,
+        pointRadius:s.pr,pointBackgroundColor:s.borderColor
+      }))},
+      options:{...BOPTS(),
+        plugins:{...BOPTS().plugins,
+          legend:{display:SEL_YEARS.length>1,position:'top',align:'end',
+            labels:{color:'#dde4f0',font:{size:9},boxWidth:9,padding:8,
+              generateLabels:chart=>chart.data.datasets.map((d,i)=>({text:d.label,fontColor:'#dde4f0',fillStyle:d.borderColor,strokeStyle:'transparent',lineWidth:0,hidden:false,datasetIndex:i}))}},
+          tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${fmtA(ctx.raw)}`}}
+        },
+        scales:{
+          x:{ticks:{color:'#4a5a78',font:{size:9}},grid:{color:'#161f30'},border:{color:'transparent'}},
+          y:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>fmtA(v)},grid:{color:'#161f30'},border:{color:'transparent'}}
+        }
+      }
+    });
+  }
+
+  // Stats del último año seleccionado (mismo patrón que renderPlan)
+  const lastY = Math.max(...SEL_YEARS);
+  const dataLast = Array.from({length:12},(_,mi)=>F.reduce((s,p)=>s+espActive(p,lastY,mi),0));
+  const df = mp.map(mi=>dataLast[mi]);
+  const tot = df.reduce((a,b)=>a+b,0);
+  const nz  = df.filter(v=>v>0);
+  const avg = nz.length?tot/nz.length:0;
+  const maxM= Math.max(...df,0);
+  const perH= F.length?tot/F.length:0;
+
+  document.getElementById('badgePlanEsp').textContent =
+    `${F.length} ${F.length===1?'persona':'personas'} · ${lastY}`;
+
+  document.getElementById('planEspStats').innerHTML=[
+    {l:'Total Período',v:fmtA(tot),c:'#a78bfa'},
     {l:'Prom. Mensual',v:fmtA(avg),c:'var(--cyan)'},
-    {l:'Mes Máximo',v:fmtA(maxM),c:'var(--green)'},
-    {l:'Por Persona',v:fmtA(perH),c:'var(--amber)'},
+    {l:'Mes Máximo',  v:fmtA(maxM),c:'var(--green)'},
+    {l:'Por Persona', v:fmtA(perH),c:'var(--amber)'},
   ].map(s=>`<div class="pstat"><div class="pstat-l">${s.l}</div><div class="pstat-v" style="color:${s.c}">${s.v}</div></div>`).join('');
 }
 
@@ -2698,9 +2832,9 @@ function renderAlertas(){
   const mujeres=F.filter(p=>p.genero==='F').length;
   const pctF=Math.round(mujeres/(F.length||1)*100);
   const items=[
-    rot>5?{i:'🔴',t:'ai-red',tit:`Rotación ${rot}% — supera el umbral del 5%`,d:`${salidas} salidas. Acción requerida.`}:null,
-    rot>3&&rot<=5?{i:'⚠',t:'ai-amber',tit:`Rotación ${rot}% — zona de precaución`,d:'Cerca del 5%. Monitorear.'}:null,
-    rot<=3&&rot>0?{i:'✓',t:'ai-green',tit:`Rotación saludable: ${rot}%`,d:'Por debajo del umbral.'}:null,
+    rot>25?{i:'🔴',t:'ai-red',tit:`Rotación ${rot}% — supera el umbral del 25%`,d:`${salidas} salidas. Acción requerida.`}:null,
+    rot>12&&rot<=25?{i:'⚠',t:'ai-amber',tit:`Rotación ${rot}% — zona de precaución`,d:'Entre 12% y 25%. Monitorear.'}:null,
+    rot<=12&&rot>0?{i:'✓',t:'ai-green',tit:`Rotación saludable: ${rot}%`,d:'Por debajo del umbral del 12%.'}:null,
     pctF<40?{i:'♀',t:'ai-amber',tit:`Brecha de género: ${pctF}% mujeres`,d:'Por debajo de la meta del 45%.'}:null,
     pctF>=45?{i:'♀',t:'ai-green',tit:`Meta de género: ${pctF}% mujeres`,d:'Meta corporativa cumplida.'}:null,
     {i:'✓',t:'ai-green',tit:`${Object.keys(PERSONAS).length} personas únicas · ${YEARS.length} años`,d:'Datos cargados y deduplicados correctamente desde Google Sheets.'},
