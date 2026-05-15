@@ -559,6 +559,16 @@ const YEAR_URL = {
   2026: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTd6XXnHhTiEM2N3Jky54ZxdFPnmjalA6DjVm5QSIclSmd2qyw00-j1lROtTiJYs1c9RwmSMRZbkkWV/pub?gid=1449007607&single=true&output=csv',
 };
 
+// Planilla ESPECIAL — misma estructura que YEAR_URL, pero todos los montos están en USD.
+// Algunas personas se duplican con la planilla regular (se suman), otras son únicas (se agregan al headcount).
+const SPECIAL_URL = {
+  2022: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTpiGuJcfGegkwvQasDistcWrsK28Ny2tLzeyV7dze_RL5bm6KnyxGNS23vGW18LoW6F4TWq0iL-hBf/pub?gid=2146792317&single=true&output=csv',
+  2023: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTpiGuJcfGegkwvQasDistcWrsK28Ny2tLzeyV7dze_RL5bm6KnyxGNS23vGW18LoW6F4TWq0iL-hBf/pub?gid=1491926370&single=true&output=csv',
+  2024: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTpiGuJcfGegkwvQasDistcWrsK28Ny2tLzeyV7dze_RL5bm6KnyxGNS23vGW18LoW6F4TWq0iL-hBf/pub?gid=1255910032&single=true&output=csv',
+  2025: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTpiGuJcfGegkwvQasDistcWrsK28Ny2tLzeyV7dze_RL5bm6KnyxGNS23vGW18LoW6F4TWq0iL-hBf/pub?gid=783744161&single=true&output=csv',
+  2026: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTpiGuJcfGegkwvQasDistcWrsK28Ny2tLzeyV7dze_RL5bm6KnyxGNS23vGW18LoW6F4TWq0iL-hBf/pub?gid=1449007607&single=true&output=csv',
+};
+
 // Revenue data: actualmente solo Costa Rica. Cuando se agregue CO/EC se podrá ampliar este mapa.
 const REVENUE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT__77a8hASHBsF8sAj_NeyNu0pg6Oui_QK31SidoY8bjOT1-dp_M1HFaOp_CGJ5JWnky-JZh6DkW0x/pub?gid=717552885&single=true&output=csv';
 const REVENUE_COUNTRY = 'Costa Rica'; // país al que pertenecen los datos de revenue cargados
@@ -580,8 +590,9 @@ const MOF   = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto'
 const PAL   = ['#4ade80','#38bdf8','#a78bfa','#f472b6','#4ade80','#fbbf24','#f87171','#818cf8','#fb923c','#34d399'];
 const YCOL  = {2022:'#4a6080',2023:'#5a80b0',2024:'#38bdf8',2025:'#3b82f6',2026:'#4ade80'};
 
-let RAW_BY_YEAR = {}; 
-let PERSONAS    = {}; 
+let RAW_BY_YEAR = {};
+let RAW_SPECIAL_BY_YEAR = {}; // planilla especial: misma estructura, montos en USD
+let PERSONAS    = {};
 let FILTERED    = []; 
 let CHARTS      = {};
 let ACT_TAL     = 'antig';
@@ -730,12 +741,37 @@ function fmtA(n){ return fmtMoney(n, getActiveCurrency()); }
 function symA(){ return (CURRENCY_INFO[getActiveCurrency()]||CURRENCY_INFO.USD).sym; }
 
 // ─── HELPERS DE CONVERSIÓN APLICADOS A LOS DATOS ──────────
-// Salario de una persona en (year, month), convertido a la moneda activa
+// Salario REGULAR crudo (moneda local de la persona)
+function salPersonaRaw(p, year, month){
+  if(!p || !p.sal || !p.sal[year]) return 0;
+  return p.sal[year][month] || 0;
+}
+// Salario ESPECIAL crudo (siempre en USD)
+function salEspRaw(p, year, month){
+  if(!p || !p.salEsp || !p.salEsp[year]) return 0;
+  return p.salEsp[year][month] || 0;
+}
+// Salario TOTAL de una persona en (year, month), convertido a la moneda activa.
+// Suma la planilla regular (moneda local) + la planilla especial (USD), ambas convertidas.
 function salPersonaActive(p, year, month){
-  if(!p || !p.sal[year]) return 0;
-  const raw = p.sal[year][month] || 0;
-  if(!raw) return 0;
-  return convertAmount(raw, getCurrencyForCountry(p.pais), getActiveCurrency(), year, month);
+  if(!p) return 0;
+  const active = getActiveCurrency();
+  let sum = 0;
+  const r = salPersonaRaw(p, year, month);
+  if(r) sum += convertAmount(r, getCurrencyForCountry(p.pais), active, year, month);
+  const e = salEspRaw(p, year, month);
+  if(e) sum += convertAmount(e, 'USD', active, year, month);
+  return sum;
+}
+// True si la persona tiene CUALQUIER salario (regular o especial) en ese (year, month)
+function personHasSal(p, year, month){
+  return salPersonaRaw(p, year, month) > 0 || salEspRaw(p, year, month) > 0;
+}
+// True si la persona tiene CUALQUIER salario en el año dado
+function personHasYear(p, year){
+  const a = p.sal && p.sal[year] && p.sal[year].some(v => v>0);
+  const b = p.salEsp && p.salEsp[year] && p.salEsp[year].some(v => v>0);
+  return !!(a || b);
 }
 
 // True si el país al que pertenece el revenue está representado en el filtro actual
@@ -976,6 +1012,27 @@ async function fetchTab(year){
   return r.text();
 }
 
+// Carga TODAS las pestañas de la planilla especial en paralelo.
+// La estructura es idéntica a YEAR_URL, así que reusamos parseSheet.
+// Los montos quedan en USD (sin convertir): la conversión ocurre on-the-fly según moneda activa.
+async function loadSpecial(){
+  RAW_SPECIAL_BY_YEAR = {};
+  const tasks = Object.entries(SPECIAL_URL).map(async ([yearStr, url]) => {
+    const year = parseInt(yearStr);
+    try{
+      const r = await fetch(url);
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const csv = await r.text();
+      RAW_SPECIAL_BY_YEAR[year] = parseSheet(csv, year);
+      console.log(`[SPECIAL ${year}] ${RAW_SPECIAL_BY_YEAR[year].length} filas`);
+    } catch(e){
+      console.warn(`[SPECIAL ${year}] Error:`, e);
+      RAW_SPECIAL_BY_YEAR[year] = [];
+    }
+  });
+  await Promise.all(tasks);
+}
+
 async function loadRevenue(){
   try{
     const r = await fetch(REVENUE_URL);
@@ -1156,21 +1213,22 @@ function parseSheet(csv, year){
 function buildPersonas(){
   PERSONAS={};
 
+  // Helper para crear una persona vacía (se reutiliza para regular y especial)
+  const newPersona = (nombre) => ({
+    nombre, years:[], sal:{}, salEsp:{},
+    hasSpecial:false,
+    empresa:'',pais:'',contrato:'',depto:'',puesto:'',genero:'',
+    estado:'',grado:'',ingles:'',hijos:0,provincia:'',canton:'',
+    ingresoDate:null,salidaDate:null,nacDate:null,edad:0,
+    motivoSalida:'',razonSalida:'',destino:'',
+    antiguedadMeses:0,
+  });
+
   YEARS.forEach(year=>{
     const rows=RAW_BY_YEAR[year]||[];
     rows.forEach(r=>{
       const key=r.nombre.toLowerCase().trim().replace(/\s+/g,' ');
-      if(!PERSONAS[key]){
-        PERSONAS[key]={
-          nombre:r.nombre, years:[], sal:{},
-          
-          empresa:'',pais:'',contrato:'',depto:'',puesto:'',genero:'',
-          estado:'',grado:'',ingles:'',hijos:0,provincia:'',canton:'',
-          ingresoDate:null,salidaDate:null,nacDate:null,edad:0,
-          motivoSalida:'',razonSalida:'',destino:'',
-          antiguedadMeses:0,
-        };
-      }
+      if(!PERSONAS[key]) PERSONAS[key] = newPersona(r.nombre);
       const p=PERSONAS[key];
 
       if(!p.years.includes(year)) p.years.push(year);
@@ -1210,6 +1268,63 @@ function buildPersonas(){
     });
   });
 
+  // Segundo pase: merge de la planilla ESPECIAL.
+  // - Si la persona ya existe (duplicada): agregamos sus salarios especiales (USD) en p.salEsp.
+  // - Si la persona NO existe: la creamos como nueva con TODOS los datos demográficos del sheet especial.
+  // En ambos casos seteamos p.hasSpecial = true para identificación posterior.
+  let dupCount = 0, newCount = 0;
+  YEARS.forEach(year=>{
+    const rows = RAW_SPECIAL_BY_YEAR[year] || [];
+    rows.forEach(r=>{
+      const key = r.nombre.toLowerCase().trim().replace(/\s+/g,' ');
+      const isNew = !PERSONAS[key];
+      if(isNew){
+        PERSONAS[key] = newPersona(r.nombre);
+        newCount++;
+      } else {
+        dupCount++;
+      }
+      const p = PERSONAS[key];
+      p.hasSpecial = true;
+
+      if(!p.years.includes(year)) p.years.push(year);
+      // Los montos en RAW_SPECIAL_BY_YEAR vienen en USD por definición de la planilla
+      p.salEsp[year] = [...r.sal];
+
+      // Para personas únicas (que NO están en la regular), completamos los campos demográficos
+      // Para duplicadas, mantenemos la información que ya teníamos de la regular (la fuente primaria)
+      if(isNew){
+        p.empresa  = r.empresa  || p.empresa;
+        p.pais     = r.pais     || p.pais;
+        p.contrato = r.contrato || p.contrato;
+        p.depto    = r.depto    || p.depto;
+        p.puesto   = r.puesto   || p.puesto;
+        if(r.genero) p.genero = r.genero;
+        p.estado   = r.estado || p.estado;
+        p.grado    = r.grado  || p.grado;
+        p.ingles   = r.ingles || p.ingles;
+        if(r.hijos !== undefined) p.hijos = r.hijos;
+        p.provincia = r.provincia || p.provincia;
+        p.canton    = r.canton    || p.canton;
+        p.nacDate   = r.nacDate   || p.nacDate;
+        if(r.edad) p.edad = r.edad;
+        if(r.ingresoDate){
+          if(!p.ingresoDate || r.ingresoDate.y<p.ingresoDate.y ||
+             (r.ingresoDate.y===p.ingresoDate.y && r.ingresoDate.m<p.ingresoDate.m)){
+            p.ingresoDate = r.ingresoDate;
+          }
+        }
+        if(r.salidaDate){
+          p.salidaDate    = r.salidaDate;
+          p.motivoSalida  = r.motivoSalida || p.motivoSalida;
+          p.razonSalida   = r.razonSalida  || p.razonSalida;
+          p.destino       = r.destino      || p.destino;
+        }
+      }
+    });
+  });
+  console.log(`[SPECIAL] ${dupCount} filas duplicadas (mismas personas) · ${newCount} filas nuevas (únicas)`);
+
   Object.values(PERSONAS).forEach(p=>{
     p.years.sort((a,b)=>a-b);
     p.activo=!p.salidaDate;
@@ -1224,8 +1339,8 @@ function buildPersonas(){
 
 function hc(personas, year, month){
   return personas.filter(p => {
-    if(!p.sal[year] || (p.sal[year][month]||0) === 0) return false;
-    
+    // Activo si tiene CUALQUIER salario (regular o especial) en ese mes
+    if(!personHasSal(p, year, month)) return false;
     if(p.salidaDate && p.salidaDate.y === year && p.salidaDate.m === month) return false;
     return true;
   }).length;
@@ -1240,7 +1355,7 @@ function hcCierre(personas, year){
 }
 
 async function loadData(){
-  RAW_BY_YEAR={}; PERSONAS={}; FILTERED=[];
+  RAW_BY_YEAR={}; RAW_SPECIAL_BY_YEAR={}; PERSONAS={}; FILTERED=[];
   let loaded=0;
   ldBar(5); ldMsg('Conectando con Google Sheets...');
 
@@ -1260,9 +1375,12 @@ async function loadData(){
     ldBar(10+loaded/YEARS.length*70);
   }
 
+  ldBar(78); ldMsg('Cargando planilla especial...');
+  await loadSpecial();
+
   ldBar(82); ldMsg('Construyendo personas únicas...');
   buildPersonas();
-  
+
   await Promise.all([loadRevenue(), loadAumentos(), loadLiquidaciones(), loadFX()]);
 
   const total=Object.keys(PERSONAS).length;
@@ -1439,11 +1557,11 @@ function applyFilters(){
 
   FILTERED=Object.values(PERSONAS).filter(p=>{
     if(!isAll){
-      const hasYear=SEL_YEARS.some(y=>p.sal[y]&&p.sal[y].some(v=>v>0));
+      const hasYear=SEL_YEARS.some(y=>personHasYear(p,y));
       if(!hasYear) return false;
     }
     if(meses!==null){
-      const hasMes=SEL_YEARS.some(y=>p.sal[y]&&meses.some(mi=>(p.sal[y][mi]||0)>0));
+      const hasMes=SEL_YEARS.some(y=>meses.some(mi=>personHasSal(p,y,mi)));
       if(!hasMes) return false;
     }
     if(depto!=='all'&&p.depto!==depto) return false;
@@ -1635,7 +1753,7 @@ function renderKPIs(){
   const isMulti = SEL_YEARS.length > 1;
   // Use last (most recent) selected year for headcount
   const lastY = Math.max(...SEL_YEARS);
-  const rowsLastY = F.filter(p=>p.sal[lastY]);
+  const rowsLastY = F.filter(p=>p.sal[lastY] || p.salEsp[lastY]);
 
   let activos, activosMes, salidas, ingresos, planTotal, planMes;
 
@@ -1663,10 +1781,10 @@ function renderKPIs(){
     return true;
   }).length;
 
-  // Planilla = acumulado de todos los años seleccionados (en moneda activa)
+  // Planilla = acumulado de todos los años seleccionados (regular + especial, en moneda activa)
   const mp = meses||Array.from({length:12},(_,i)=>i);
   planTotal = F.reduce((s,p)=>s+SEL_YEARS.reduce((ys,y)=>{
-    if(!p.sal[y]) return ys;
+    if(!p.sal[y] && !p.salEsp[y]) return ys;
     return ys+mp.reduce((ms,mi)=>ms+salPersonaActive(p,y,mi),0);
   },0),0);
   planMes = mp.length>0&&SEL_YEARS.length>0 ? planTotal/(mp.length*SEL_YEARS.length) : 0;
@@ -1682,7 +1800,7 @@ function renderKPIs(){
 
   // Comparación año anterior al último año
   const prevY=lastY-1;
-  const prevF=Object.values(PERSONAS).filter(p=>p.sal[prevY]&&p.sal[prevY].some(v=>v>0));
+  const prevF=Object.values(PERSONAS).filter(p=>personHasYear(p,prevY));
   const prevC=hcCierre(prevF,prevY);
   const prevAct=prevC.n;
   const chgAct=prevAct?((activos-prevAct)/prevAct*100).toFixed(1):null;
@@ -1717,7 +1835,7 @@ function renderKPIs(){
   if(revOK && SEL_YEARS.length===1 && REVENUE[prevY]){
     let prevRev = 0, prevSum = 0, prevN = 0;
     const prevF_REV = Object.values(PERSONAS).filter(p =>
-      p.sal[prevY] && p.sal[prevY].some(v=>v>0) &&
+      personHasYear(p, prevY) &&
       (p.pais||'').toLowerCase().trim() === REVENUE_COUNTRY.toLowerCase().trim()
     );
     for(const m of Object.keys(REVENUE[prevY]).map(Number)){
@@ -1905,7 +2023,7 @@ function renderDepto(){
   const lastM=c.m>=0?c.m:11;
   const counts={};
   FILTERED.forEach(p=>{
-    if(p.sal[lastY]&&(p.sal[lastY][lastM]||0)>0){
+    if(personHasSal(p,lastY,lastM)){
       const d=p.depto||'N/D';
       counts[d]=(counts[d]||0)+1;
     }
@@ -2413,12 +2531,13 @@ function renderAumentos(){
     deptoAumento[d] = (deptoAumento[d]||0) + aumRowTotal(r);
   });
 
-  // Acumular planilla de todos los años seleccionados que tengan datos de aumentos
+  // Acumular planilla (regular + especial) de todos los años seleccionados que tengan aumentos
   años.forEach(y => {
     Object.values(PERSONAS).forEach(p => {
-      if(!p.sal[y]) return;
+      if(!p.sal[y] && !p.salEsp[y]) return;
       const d = p.depto || 'N/D';
-      const planillaAnual = (p.sal[y]||[]).reduce((a,_,mi)=>a+salPersonaActive(p,y,mi), 0);
+      let planillaAnual = 0;
+      for(let mi=0; mi<12; mi++) planillaAnual += salPersonaActive(p, y, mi);
       deptoPlanilla[d] = (deptoPlanilla[d]||0) + planillaAnual;
     });
   });
