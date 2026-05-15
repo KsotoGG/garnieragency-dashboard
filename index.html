@@ -1688,22 +1688,49 @@ function renderKPIs(){
   const chgAct=prevAct?((activos-prevAct)/prevAct*100).toFixed(1):null;
 
   // RPE — revenue solo aplica si el país de los datos está en el scope filtrado.
-  // Los activos del RPE son SOLO los del país de revenue (Costa Rica hoy) para evitar distorsión.
-  const revOK     = revenueInScope();
-  const revTotal  = !revOK ? 0 : SEL_YEARS.reduce((s,y)=>{
-    const mp2=meses||Array.from({length:12},(_,i)=>i);
-    return s+mp2.reduce((ms,mi)=>ms+revActive(y,mi),0);
-  },0);
-  const revActiv  = revOK ? revCountryActivos(F, lastY, isMulti, meses) : 0;
-  const rpeVal    = revActiv>0 ? revTotal/revActiv : 0;
+  // Cálculo correcto: PROMEDIO de (revenue_mes / activos_mes) por cada mes con datos.
+  // El total acumulado se muestra solo como referencia, NO se usa como base del RPE.
+  const revOK   = revenueInScope();
+  const F_REV   = F.filter(p => (p.pais||'').toLowerCase().trim() === REVENUE_COUNTRY.toLowerCase().trim());
+  const revPeriod = meses||Array.from({length:12},(_,i)=>i);
+
+  let revTotal = 0;
+  let rpeMonthlySum = 0;  // suma de (rev_m / act_m)
+  let rpeMonthlyN   = 0;  // cantidad de meses con datos válidos
+  if(revOK){
+    for(const y of SEL_YEARS){
+      for(const m of revPeriod){
+        const rev = revActive(y, m);
+        if(rev <= 0) continue;
+        revTotal += rev;
+        const act = hc(F_REV, y, m);
+        if(act <= 0) continue;
+        rpeMonthlySum += rev / act;
+        rpeMonthlyN++;
+      }
+    }
+  }
+  const rpeVal = rpeMonthlyN > 0 ? rpeMonthlySum / rpeMonthlyN : 0;
+
+  // Para comparar con año anterior, mismo cálculo (promedio mensual) sobre el año previo
   let rpeGrowth=null;
   if(revOK && SEL_YEARS.length===1 && REVENUE[prevY]){
-    const prevRev   = Object.keys(REVENUE[prevY]).reduce((a,k)=>a+revActive(prevY,+k),0);
-    // Para growth, usamos activos prev limitado al país de revenue
-    const prevF_REV = Object.values(PERSONAS).filter(p=>p.sal[prevY]&&p.sal[prevY].some(v=>v>0) && (p.pais||'').toLowerCase().trim()===REVENUE_COUNTRY.toLowerCase().trim());
-    const prevRevAct= hcCierre(prevF_REV, prevY).n;
-    const prevRPE   = prevRev/(prevRevAct||1);
-    if(prevRPE>0) rpeGrowth=+((rpeVal-prevRPE)/prevRPE*100).toFixed(1);
+    let prevRev = 0, prevSum = 0, prevN = 0;
+    const prevF_REV = Object.values(PERSONAS).filter(p =>
+      p.sal[prevY] && p.sal[prevY].some(v=>v>0) &&
+      (p.pais||'').toLowerCase().trim() === REVENUE_COUNTRY.toLowerCase().trim()
+    );
+    for(const m of Object.keys(REVENUE[prevY]).map(Number)){
+      const rev = revActive(prevY, m);
+      if(rev <= 0) continue;
+      prevRev += rev;
+      const act = hc(prevF_REV, prevY, m);
+      if(act <= 0) continue;
+      prevSum += rev / act;
+      prevN++;
+    }
+    const prevRPE = prevN>0 ? prevSum/prevN : 0;
+    if(prevRPE>0) rpeGrowth = +((rpeVal-prevRPE)/prevRPE*100).toFixed(1);
   }
 
   const ctx = isMulti ? `${SEL_YEARS.join('+')} · Activos: cierre ${lastY}` : activosMes;
@@ -1723,13 +1750,13 @@ function renderKPIs(){
      bt:rotTasa>5?'dn':rotTasa>3?'nt':'up',
      ctx:`${salidas} sal. / prom. ${Math.round(hcPromedio)} · Meta <5%`,
      c:rotTasa>5?'t-red':rotTasa>3?'t-amber':'t-teal',spark:false},
-    {l:'Revenue per Employee',v:(revOK && revTotal>0)?fmtA(rpeVal):'Sin datos',
+    {l:'Revenue per Employee',v:(revOK && rpeMonthlyN>0)?fmtA(rpeVal):'Sin datos',
      b:rpeGrowth!==null?(rpeGrowth>=0?'↑':'↓')+Math.abs(rpeGrowth)+'%':null,
      bt:rpeGrowth!==null?(rpeGrowth>=0?'up':'dn'):'nt',
      ctx:!revOK
        ? `Sin datos de revenue para esta selección`
-       : (revTotal>0
-           ? `Rev: ${fmtA(revTotal)} / ${revActiv} activos ${REVENUE_COUNTRY}`
+       : (rpeMonthlyN>0
+           ? `Prom. mensual · ${rpeMonthlyN} ${rpeMonthlyN===1?'mes':'meses'} · Acum: ${fmtA(revTotal)}`
            : 'Conecta el sheet de revenue'),
      c:'t-cyan',spark:false},
   ];
