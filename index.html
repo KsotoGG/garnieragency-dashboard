@@ -358,23 +358,24 @@ option{background:var(--bg3)}
       <div class="ph"><div><div class="pt">Tasa de Rotación Mensual</div><div class="ps">% salidas / headcount activo · Meta &lt;12%</div></div></div>
       <div style="height:220px"><canvas id="cRot"></canvas></div>
     </div>
-    <div class="panel c3">
-      <div class="ph"><div><div class="pt">Rotación Voluntaria</div><div class="ps">Renuncia · Traslado · Pensión</div></div><div class="pb" id="badgeRotVol">—</div></div>
-      <div style="height:220px"><canvas id="cRotVol"></canvas></div>
-    </div>
-    <div class="panel c3">
-      <div class="ph"><div><div class="pt">Rotación Inducida</div><div class="ps">Despido con y sin resp. patronal</div></div><div class="pb" id="badgeRotInd">—</div></div>
-      <div style="height:220px"><canvas id="cRotInd"></canvas></div>
+    <div class="panel c6">
+      <div class="ph"><div><div class="pt">Rotación por Tipo</div><div class="ps" id="psRotTipo">Renuncia · Traslado · Pensión</div></div><div class="pb" id="badgeRotTipo">—</div></div>
+      <div class="tabs" id="rotTipoTabs">
+        <div class="tab active" onclick="switchRotTipo('vol',this)">Voluntaria</div>
+        <div class="tab" onclick="switchRotTipo('ind',this)">Inducida</div>
+      </div>
+      <div style="height:220px"><canvas id="cRotTipo"></canvas></div>
     </div>
   </div>
   <div class="cg">
     <div class="panel c6">
-      <div class="ph"><div><div class="pt">Motivo de Salida</div></div></div>
-      <div style="height:220px"><canvas id="cMot"></canvas></div>
+      <div class="ph"><div><div class="pt">Salidas — clasificación</div><div class="ps">Top categorías por cantidad de salidas</div></div></div>
+      <div class="tabs" id="salidasTabs">
+        <div class="tab active" onclick="switchSalidas('motivo',this)">Motivo</div>
+        <div class="tab" onclick="switchSalidas('razon',this)">Razón</div>
+      </div>
+      <div style="height:220px"><canvas id="cSalidas"></canvas></div>
     </div>
-  </div>
-  <div class="cg">
-    <div class="panel c6"><div class="ph"><div><div class="pt">Razón de Salida</div></div></div><div style="height:200px"><canvas id="cRaz"></canvas></div></div>
     <div class="panel c6"><div class="ph"><div><div class="pt">Destino del Colaborador</div></div></div><div style="height:200px"><canvas id="cDest"></canvas></div></div>
   </div>
 
@@ -514,6 +515,12 @@ option{background:var(--bg3)}
     <div class="panel c12 fi">
       <div class="ph"><div><div class="pt">Desglose por Componente</div><div class="ps">Aguinaldo · Vacaciones · Preaviso · Cesantía</div></div><div class="pb" id="badgeLiqComp">—</div></div>
       <div style="height:240px"><canvas id="cLiqComp"></canvas></div>
+    </div>
+  </div>
+  <div class="cg fi">
+    <div class="panel c12 fi">
+      <div class="ph"><div><div class="pt">Costo de Liquidación por Razón de Salida</div><div class="ps">Reestructuración resaltada en rojo · resto en gris</div></div><div class="pb" id="badgeLiqRazon">—</div></div>
+      <div style="height:260px"><canvas id="cLiqRazon"></canvas></div>
     </div>
   </div>
 
@@ -1776,7 +1783,7 @@ function renderAll(){
   renderForm(ACT_FORM);
   renderUb(ACT_UB);
   renderPuestos();
-  renderRot(); renderRotVol(); renderRotInd(); renderMot(); renderRaz(); renderDest();
+  renderRot(); renderRotTipo(); renderSalidas(); renderDest();
   renderHM();
   renderPlan();
   renderPlanEsp();
@@ -2149,7 +2156,7 @@ function switchTal(tab,el){
 function renderTal(tab){
   let labels,data,color;
   if(tab==='antig'){
-    const b=[['<1 año',0,12],['1-3 años',12,36],['3-5 años',36,60],['5-7 años',60,84],['+7 años',84,9999]];
+    const b=[['-1 año',0,12],['1-3 años',12,36],['3-6 años',36,72],['6-9 años',72,108],['+10 años',108,9999]];
     labels=b.map(x=>x[0]); color='#4ade80';
     data=b.map(([,lo,hi])=>FILTERED.filter(p=>p.antiguedadMeses>=lo&&p.antiguedadMeses<hi).length);
   } else if(tab==='edad'){
@@ -2317,31 +2324,62 @@ function mkRotLine(canvasId, badgeId, filterFn, colorFn){
   });
 }
 
-function renderRotVol(){
-  mkRotLine('cRotVol','badgeRotVol',
+function renderRotVol(canvasId='cRotTipo', badgeId='badgeRotTipo'){
+  mkRotLine(canvasId, badgeId,
     p=>clasificaMotivo(p.motivoSalida)==='voluntaria',
     y=>YCOL_ING[y]||YCOL[y]
   );
 }
-function renderRotInd(){
-  mkRotLine('cRotInd','badgeRotInd',
+function renderRotInd(canvasId='cRotTipo', badgeId='badgeRotTipo'){
+  mkRotLine(canvasId, badgeId,
     p=>clasificaMotivo(p.motivoSalida)==='inducida',
     y=>YCOL_SAL[y]||'#f87171'
   );
 }
 
-
-function renderMot(){
+function renderMot(canvasId='cSalidas'){
   const c=countBy(FILTERED.filter(p=>p.motivoSalida&&p.motivoSalida!=='N/A'),'motivoSalida');
   const s=Object.entries(c).sort((a,b)=>b[1]-a[1]);
-  if(!s.length){emptyChart('cMot');return;}
-  CHARTS.mot=mkBar('cMot',s.map(x=>x[0]),s.map(x=>x[1]),PAL,true);
+  if(!s.length){emptyChart(canvasId);return;}
+  CHARTS.salidas=mkBar(canvasId,s.map(x=>x[0]),s.map(x=>x[1]),PAL,true);
 }
-function renderRaz(){
+function renderRaz(canvasId='cSalidas'){
   const c=countBy(FILTERED.filter(p=>p.razonSalida&&p.razonSalida!=='NA'),'razonSalida');
   const s=Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,8);
-  if(!s.length){emptyChart('cRaz');return;}
-  CHARTS.raz=mkBar('cRaz',s.map(x=>x[0]),s.map(x=>x[1]),['#38bdf8'],true);
+  if(!s.length){emptyChart(canvasId);return;}
+  CHARTS.salidas=mkBar(canvasId,s.map(x=>x[0]),s.map(x=>x[1]),['#38bdf8'],true);
+}
+
+// ─── PANELS COMBINADOS CON TABS ──────────────────────────
+let ACT_ROTTIPO = 'vol';   // 'vol' | 'ind'
+let ACT_SALIDAS = 'motivo'; // 'motivo' | 'razon'
+
+function switchRotTipo(tab, el){
+  ACT_ROTTIPO = tab;
+  document.querySelectorAll('#rotTipoTabs .tab').forEach(t=>t.classList.remove('active'));
+  if(el) el.classList.add('active');
+  const ps = document.getElementById('psRotTipo');
+  if(ps) ps.textContent = tab==='vol' ? 'Renuncia · Traslado · Pensión' : 'Despido con y sin resp. patronal';
+  if(CHARTS.rotTipo){CHARTS.rotTipo.destroy();delete CHARTS.rotTipo;}
+  renderRotTipo();
+}
+function renderRotTipo(){
+  // mkRotLine almacena en CHARTS[canvasId]; alias rotTipo para destruir desde el switcher
+  if(ACT_ROTTIPO==='vol'){ renderRotVol('cRotTipo','badgeRotTipo'); }
+  else { renderRotInd('cRotTipo','badgeRotTipo'); }
+  CHARTS.rotTipo = CHARTS.cRotTipo || CHARTS.rotTipo;
+}
+
+function switchSalidas(tab, el){
+  ACT_SALIDAS = tab;
+  document.querySelectorAll('#salidasTabs .tab').forEach(t=>t.classList.remove('active'));
+  if(el) el.classList.add('active');
+  if(CHARTS.salidas){CHARTS.salidas.destroy();delete CHARTS.salidas;}
+  renderSalidas();
+}
+function renderSalidas(){
+  if(ACT_SALIDAS==='motivo') renderMot('cSalidas');
+  else renderRaz('cSalidas');
 }
 function renderDest(){
   const c=countBy(FILTERED.filter(p=>p.destino),'destino');
@@ -2823,6 +2861,57 @@ function renderLiquidaciones(){
       }
     }
   });
+
+  // Gráfico 4: Costo de liquidación por Razón de Salida
+  // Se cruza cada fila de LIQ con PERSONAS para obtener razonSalida, luego se acumula el total.
+  // 'reestructuración' (cualquier variante) se resalta en rojo.
+  const porRazon = {};
+  liq.forEach(r => {
+    const key = (r.nombre||'').toLowerCase().trim().replace(/\s+/g,' ');
+    const p   = PERSONAS[key];
+    const raz = (p && p.razonSalida && p.razonSalida.trim()) ? p.razonSalida.trim() : 'Sin razón';
+    porRazon[raz] = (porRazon[raz]||0) + liqFieldActive(r,'total');
+  });
+  const razonSort = Object.entries(porRazon).sort((a,b)=>b[1]-a[1]);
+
+  const isReestr = lbl => /reestructur/i.test(lbl);
+  const REESTR_COLOR = '#f87171';
+  const OTHER_COLOR  = '#7e92b4';
+
+  // Total y % de reestructuración
+  let totalRazon = 0, totalReestr = 0;
+  razonSort.forEach(([k,v])=>{
+    totalRazon += v;
+    if(isReestr(k)) totalReestr += v;
+  });
+  const pctReestr = totalRazon>0 ? Math.round(totalReestr/totalRazon*100) : 0;
+  document.getElementById('badgeLiqRazon').textContent =
+    totalReestr>0 ? `Reestructuración: ${fmtA(totalReestr)} · ${pctReestr}%` : '—';
+
+  if(CHARTS.liqRazon){CHARTS.liqRazon.destroy();delete CHARTS.liqRazon;}
+  const ctxR = document.getElementById('cLiqRazon');
+  if(ctxR && razonSort.length){
+    const labels = razonSort.map(x=>x[0]);
+    const values = razonSort.map(x=>x[1]);
+    const bgc = labels.map(l => isReestr(l) ? REESTR_COLOR+'cc' : OTHER_COLOR+'66');
+    const bdc = labels.map(l => isReestr(l) ? REESTR_COLOR    : OTHER_COLOR);
+    CHARTS.liqRazon = new Chart(ctxR,{
+      type:'bar',
+      data:{labels, datasets:[{
+        data:values, backgroundColor:bgc, borderColor:bdc,
+        borderWidth:1, borderRadius:4, barPercentage:.7
+      }]},
+      options:{...BOPTS(), indexAxis:'y',
+        plugins:{...BOPTS().plugins, legend:{display:false},
+          tooltip:{...BOPTS().plugins.tooltip,callbacks:{label:ctx=>' '+fmtA(ctx.raw)}}
+        },
+        scales:{
+          x:{beginAtZero:true,ticks:{color:'#4a5a78',font:{size:9},callback:v=>fmtA(v)},grid:{color:'#161f30'},border:{color:'transparent'}},
+          y:{ticks:{color:'#dde4f0',font:{size:10}},grid:{color:'transparent'},border:{color:'transparent'}}
+        }
+      }
+    });
+  }
 }
 function renderAlertas(){
   const F=FILTERED;
@@ -2948,10 +3037,17 @@ window.addEventListener('DOMContentLoaded',()=>{
 
       if(type === 'bar'){
         const isH = chart.options.indexAxis === 'y';
+        // Helper local: formatea con separador de miles (es-CR usa "." como separador)
+        const fmtBar = v => {
+          const n = Number(v);
+          if(!isFinite(n)) return String(v);
+          return n.toLocaleString('es-CR');
+        };
         chart.data.datasets.forEach((ds,di)=>{
           chart.getDatasetMeta(di).data.forEach((bar,i)=>{
             const v = ds.data[i];
             if(!v || v===0) return;
+            const lbl = fmtBar(v);
             ctx.font = "bold 10px 'DM Mono',monospace";
             if(isH){
               const barW = bar.x - bar.base;
@@ -2961,12 +3057,12 @@ window.addEventListener('DOMContentLoaded',()=>{
                 ctx.fillStyle = 'rgba(221,228,240,0.9)';
                 ctx.textAlign = 'left';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(v, bar.x + 5, bar.y);
+                ctx.fillText(lbl, bar.x + 5, bar.y);
               } else {
                 ctx.fillStyle = 'rgba(5,13,26,0.85)';
                 ctx.textAlign = 'right';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(v, bar.x - 6, bar.y);
+                ctx.fillText(lbl, bar.x - 6, bar.y);
               }
             } else {
               const available = bar.y - chart.chartArea.top;
@@ -2974,12 +3070,12 @@ window.addEventListener('DOMContentLoaded',()=>{
                 ctx.fillStyle = 'rgba(221,228,240,0.9)';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'bottom';
-                ctx.fillText(v, bar.x, bar.y - 3);
+                ctx.fillText(lbl, bar.x, bar.y - 3);
               } else {
                 ctx.fillStyle = 'rgba(5,13,26,0.85)';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'top';
-                ctx.fillText(v, bar.x, bar.y + 4);
+                ctx.fillText(lbl, bar.x, bar.y + 4);
               }
             }
           });
