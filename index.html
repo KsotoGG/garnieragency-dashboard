@@ -684,7 +684,36 @@ function getCurrencyForCountry(pais){
   const p = (pais||'').toLowerCase().trim();
   if(p.includes('colombia')) return 'COP';
   if(p.includes('ecuador'))  return 'USD';
+  if(p.includes('panam'))    return 'USD'; // Panamá → USD (matchea 'panama' y 'panamá')
   return 'CRC'; // default: Costa Rica
+}
+
+// ─── EXCEPCIONES POR PERSONA (moneda y cargas) ─────────────
+// Devuelve la moneda en la que se PAGA el salario de una persona.
+// Regla general: por país. Excepciones:
+//   - Costa Rica + empresa "SERVICIOS FIJOS EXTERNOS" → USD (contratistas)
+//   - Nicole Chinchilla Valverde (freelance) → CRC siempre
+function getCurrencyForPerson(p){
+  if(!p) return 'CRC';
+  const nm  = (p.nombre||'').toLowerCase().trim();
+  if(nm.includes('chinchilla') && nm.includes('nicole')) return 'CRC';
+  const country = getCurrencyForCountry(p.pais);
+  const emp = (p.empresa||'').toLowerCase().trim();
+  if(country === 'CRC' && emp.includes('servicios fijos externos')) return 'USD';
+  return country;
+}
+
+// Devuelve la tasa de cargas patronales aplicable a una persona.
+// Regla general: % social del país. Excepciones:
+//   - SFE: 0% (son contratistas, sin cargas)
+//   - Nicole freelance: 13% (IVA, en lugar de cargas sociales)
+function getEmployerChargeRate(p){
+  if(!p) return 0;
+  const nm = (p.nombre||'').toLowerCase().trim();
+  if(nm.includes('chinchilla') && nm.includes('nicole')) return 0.13;
+  const emp = (p.empresa||'').toLowerCase().trim();
+  if(emp.includes('servicios fijos externos')) return 0;
+  return getSocialChargeRate(p.pais);
 }
 
 // Devuelve la tasa de la moneda para year/month, con carry-forward (último valor disponible)
@@ -766,12 +795,16 @@ const SOCIAL_CHARGE = {
   'Costa Rica': 0.42,
   'Colombia':   0.383,
   'Ecuador':    0.33,
+  'Panamá':     0.38,
 };
 function getSocialChargeRate(pais){
   const p = (pais||'').toLowerCase().trim();
   if(!p) return 0;
-  const key = Object.keys(SOCIAL_CHARGE).find(k => k.toLowerCase().trim() === p);
-  return key ? SOCIAL_CHARGE[key] : 0;
+  if(p.includes('colombia')) return SOCIAL_CHARGE['Colombia'];
+  if(p.includes('ecuador'))  return SOCIAL_CHARGE['Ecuador'];
+  if(p.includes('panam'))    return SOCIAL_CHARGE['Panamá']; // matchea 'panama' y 'panamá'
+  if(p.includes('costa') || p.includes('rica')) return SOCIAL_CHARGE['Costa Rica'];
+  return 0;
 }
 
 // ─── HELPERS DE CONVERSIÓN APLICADOS A LOS DATOS ──────────
@@ -785,15 +818,16 @@ function salEspRaw(p, year, month){
   if(!p || !p.salEsp || !p.salEsp[year]) return 0;
   return p.salEsp[year][month] || 0;
 }
-// Bruto REGULAR convertido a moneda activa (sin cargas sociales, sin especial)
+// Bruto REGULAR convertido a moneda activa (sin cargas, sin especial)
+// Usa la moneda PROPIA de la persona (CR-SFE en USD, Nicole en CRC, etc.)
 function salRegularGrossActive(p, year, month){
   const r = salPersonaRaw(p, year, month);
   if(!r) return 0;
-  return convertAmount(r, getCurrencyForCountry(p.pais), getActiveCurrency(), year, month);
+  return convertAmount(r, getCurrencyForPerson(p), getActiveCurrency(), year, month);
 }
-// Cargas sociales sobre el salario regular, en moneda activa (NO sobre el especial)
+// Cargas patronales (sociales o IVA según excepciones) sobre el salario regular, en moneda activa
 function salChargesActive(p, year, month){
-  return salRegularGrossActive(p, year, month) * getSocialChargeRate(p.pais);
+  return salRegularGrossActive(p, year, month) * getEmployerChargeRate(p);
 }
 // Planilla ESPECIAL convertida a moneda activa (USD nativo)
 function salEspecialActive(p, year, month){
@@ -856,21 +890,19 @@ function revCountryActivos(F, lastY, isMulti, meses){
   return c.n;
 }
 
-// Liquidación: convierte un campo (salario/aguinaldo/total...) según el país de la persona
+// Liquidación: convierte un campo (salario/aguinaldo/total...) según la moneda real de la persona
 function liqFieldActive(row, field){
   const key = (row.nombre||'').toLowerCase().trim().replace(/\s+/g,' ');
   const p = PERSONAS[key];
-  const country = p ? p.pais : '';
-  const fromCur = getCurrencyForCountry(country);
+  const fromCur = p ? getCurrencyForPerson(p) : 'CRC';
   return convertAmount(row[field]||0, fromCur, getActiveCurrency(), row.anio, row.mes);
 }
 
-// Aumento mensual: convierte usando el país de la persona
+// Aumento mensual: convierte usando la moneda real de la persona (respeta excepciones SFE/Nicole)
 function aumPersonaMesActive(aumRow, monthIdx, year){
   const key = (aumRow.nombre||'').toLowerCase().trim().replace(/\s+/g,' ');
   const p = PERSONAS[key];
-  const country = p ? p.pais : '';
-  const fromCur = getCurrencyForCountry(country);
+  const fromCur = p ? getCurrencyForPerson(p) : 'CRC';
   return convertAmount(aumRow.meses[monthIdx]||0, fromCur, getActiveCurrency(), year, monthIdx);
 }
 
